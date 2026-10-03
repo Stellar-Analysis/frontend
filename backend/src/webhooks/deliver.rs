@@ -36,13 +36,17 @@ impl DeliveryPolicy {
             .initial_backoff
             .as_millis()
             .saturating_mul(1u128 << shift);
-        let capped = millis.min(self.max_backoff.as_millis());
+        let capped = millis
+            .min(self.max_backoff.as_millis())
+            .min(u128::from(u64::MAX));
         Duration::from_millis(capped as u64)
     }
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum DeliverError {
+    #[error("cannot serialize webhook payload: {0}")]
+    Serialization(String),
     #[error("subscriber returned non-success status {0}")]
     NonSuccess(u16),
     #[error("transport failure: {0}")]
@@ -62,27 +66,45 @@ pub struct DeliveryAttempt {
 
 /// Abstraction over the HTTP client so unit tests can inject a fake transport.
 pub trait HttpTransport {
-    fn post(
-        &mut self,
-        url: &str,
-        headers: &[(&str, String)],
-        body: &[u8],
-    ) -> Result<u16, String>;
+    fn post(&mut self, url: &str, headers: &[(&str, String)], body: &[u8]) -> Result<u16, String>;
+}
+
+/// Waits between delivery attempts. The default implementation waits in real
+/// time; an embedding runtime may supply its own clock-aware implementation.
+pub trait RetrySleeper {
+    fn sleep(&mut self, delay: Duration);
+}
+
+#[derive(Debug, Default)]
+pub struct ThreadSleeper;
+
+impl RetrySleeper for ThreadSleeper {
+    fn sleep(&mut self, delay: Duration) {
+        std::thread::sleep(delay);
+    }
 }
 
 /// Delivers signed webhook events with bounded retry-with-backoff.
-pub struct WebhookDeliverer<T: HttpTransport> {
+pub struct WebhookDeliverer<T: HttpTransport, S: RetrySleeper = ThreadSleeper> {
     pub transport: T,
     pub policy: DeliveryPolicy,
     pub store: DeliveryStore,
+    sleeper: S,
 }
 
-impl<T: HttpTransport> WebhookDeliverer<T> {
+impl<T: HttpTransport> WebhookDeliverer<T, ThreadSleeper> {
     pub fn new(transport: T, policy: DeliveryPolicy) -> Self {
+        Self::with_sleeper(transport, policy, ThreadSleeper)
+    }
+}
+
+impl<T: HttpTransport, S: RetrySleeper> WebhookDeliverer<T, S> {
+    pub fn with_sleeper(transport: T, policy: DeliveryPolicy, sleeper: S) -> Self {
         Self {
             transport,
             policy,
             store: DeliveryStore::default(),
+            sleeper,
         }
     }
 
@@ -100,7 +122,7 @@ impl<T: HttpTransport> WebhookDeliverer<T> {
             "type": event.kind,
             "data": event.payload,
         }))
-        .expect("webhook payload serializes");
+        .map_err(|error| DeliverError::Serialization(error.to_string()))?;
 
         let signature = sign::sign_payload(secret, &body);
         let idem_header = event.idempotency_key.to_string();
@@ -108,9 +130,10 @@ impl<T: HttpTransport> WebhookDeliverer<T> {
         let mut last_error = DeliverError::Exhausted(0);
 
         for attempt in 1..=self.policy.max_attempts {
-            let _delay = self.policy.backoff_for_attempt(attempt);
-            // Callers that need real sleeping can wrap this; the policy is
-            // still queryable and tested without wall-clock waits.
+            let delay = self.policy.backoff_for_attempt(attempt);
+            if !delay.is_zero() {
+                self.sleeper.sleep(delay);
+            }
 
             let headers = [
                 (SIGNATURE_HEADER, signature.clone()),
