@@ -26,6 +26,13 @@
 //!
 //! Ascending pages invert the comparison. Callers should maintain a compound
 //! index on `(ts, id)` (or `(ingested_at, id)`) for efficient seeking.
+//!
+//! # Page limits
+//!
+//! A limit is an upper bound on the number of rows returned. After seeking past
+//! a cursor, a limit larger than the remaining snapshot (including `usize::MAX`)
+//! returns all remaining rows without arithmetic overflow. An exhausted cursor
+//! returns an empty page. A zero limit retains its empty-page behavior.
 
 mod cursor;
 

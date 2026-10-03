@@ -81,3 +81,50 @@ fn mixed_timestamps_still_stable_across_pages() {
     let unique: std::collections::BTreeSet<_> = seen.iter().cloned().collect();
     assert_eq!(unique.len(), rows.len());
 }
+
+#[test]
+fn oversized_page_limits_return_every_remaining_collision_row() {
+    let rows: Vec<Row> = (0..5)
+        .map(|i| Row {
+            ts: 100,
+            id: format!("{i:04}"),
+            label: format!("row-{i}"),
+        })
+        .collect();
+
+    for direction in [SortDirection::Asc, SortDirection::Desc] {
+        let first = paginate(&rows, 2, None, direction);
+        let cursor = decode_cursor(first.next_cursor.as_deref().unwrap()).unwrap();
+        let expected = match direction {
+            SortDirection::Asc => vec!["0002", "0003", "0004"],
+            SortDirection::Desc => vec!["0002", "0001", "0000"],
+        };
+
+        for limit in [usize::MAX, usize::MAX - 1] {
+            let page = paginate(&rows, limit, Some(&cursor), direction);
+            let ids: Vec<&str> = page.items.iter().map(|row| row.id.as_str()).collect();
+            assert_eq!(ids, expected);
+            assert!(page.next_cursor.is_none());
+        }
+    }
+}
+
+#[test]
+fn oversized_page_limit_at_an_exhausted_cursor_returns_an_empty_page() {
+    let rows: Vec<Row> = (0..5)
+        .map(|i| Row {
+            ts: 100,
+            id: format!("{i:04}"),
+            label: format!("row-{i}"),
+        })
+        .collect();
+
+    for direction in [SortDirection::Asc, SortDirection::Desc] {
+        let all = paginate(&rows, rows.len(), None, direction);
+        let last = all.items.last().unwrap();
+        let cursor = CompoundCursor::new(last.ts, last.id.clone());
+        let page = paginate(&rows, usize::MAX, Some(&cursor), direction);
+        assert!(page.items.is_empty());
+        assert!(page.next_cursor.is_none());
+    }
+}

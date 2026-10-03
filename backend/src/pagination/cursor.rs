@@ -119,7 +119,7 @@ pub fn paginate<T: CursorKey + Clone>(
         None => 0,
     };
 
-    let end = (start + limit).min(ordered.len());
+    let end = start.saturating_add(limit).min(ordered.len());
     let items = ordered[start..end].to_vec();
     let next_cursor = if end < ordered.len() {
         items.last().map(|row| {
