@@ -1,0 +1,213 @@
+   Compiling stellar-analysis-backend v0.1.0 (/workspace/scratch/1b6b1b08e6b1/backlog/stellar_backend)
+warning: unused import: `Span`
+  --> src/observability/health_checks.rs:15:27
+   |
+15 | use tracing::{instrument, Span};
+   |                           ^^^^
+   |
+   = note: `#[warn(unused_imports)]` on by default
+
+warning: unused variable: `client`
+   --> src/api/rpc.rs:283:11
+    |
+283 |     State(client): State<Arc<StellarRpcClient>>,
+    |           ^^^^^^ help: if this is intentional, prefix it with an underscore: `_client`
+    |
+    = note: `#[warn(unused_variables)]` on by default
+
+warning: unused variable: `client`
+   --> src/api/rpc.rs:348:11
+    |
+348 |     State(client): State<Arc<StellarRpcClient>>,
+    |           ^^^^^^ help: if this is intentional, prefix it with an underscore: `_client`
+
+warning: unused variable: `start`
+   --> src/observability/health_checks.rs:175:9
+    |
+175 |     let start = Instant::now();
+    |         ^^^^^ help: if this is intentional, prefix it with an underscore: `_start`
+
+warning: unused variable: `client`
+   --> src/rpc/stellar.rs:517:13
+    |
+517 |         let client = match Client::builder().timeout(request_timeout).build() {
+    |             ^^^^^^ help: if this is intentional, prefix it with an underscore: `_client`
+
+warning: unused variable: `client`
+   --> src/rpc/stellar.rs:638:13
+    |
+638 |         let client = match Client::builder().timeout(request_timeout).build() {
+    |             ^^^^^^ help: if this is intentional, prefix it with an underscore: `_client`
+
+warning: function `compute_transaction_hash` is never used
+  --> src/services/contract.rs:88:4
+   |
+88 | fn compute_transaction_hash(network_passphrase: &str, tx_envelope_xdr: &[u8]) -> Result<[u8; 32]> {
+   |    ^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` on by default
+
+warning: comparison is useless due to type limits
+  --> src/analytics.rs:97:8
+   |
+97 |     if score.total_assets < 0 {
+   |        ^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_comparisons)]` on by default
+
+warning: `stellar-analysis-backend` (lib) generated 8 warnings (run `cargo fix --lib -p stellar-analysis-backend` to apply 1 suggestion)
+warning: unused imports: `WebhookChannel` and `WebhookEndpoint`
+  --> tests/../src/webhooks/mod.rs:14:19
+   |
+14 | pub use channel::{WebhookChannel, WebhookEndpoint};
+   |                   ^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` on by default
+
+warning: method `run` is never used
+  --> tests/../src/services/webhook_dispatcher.rs:34:18
+   |
+20 | impl WebhookDispatcher {
+   | ---------------------- method in this implementation
+...
+34 |     pub async fn run(&self) -> Result<()> {
+   |                  ^^^
+   |
+   = note: `#[warn(dead_code)]` on by default
+
+warning: field `webhook_service` is never read
+  --> tests/../src/services/webhook_event_service.rs:16:5
+   |
+15 | pub struct WebhookEventService {
+   |            ------------------- field in this struct
+16 |     webhook_service: Arc<WebhookService>,
+   |     ^^^^^^^^^^^^^^^
+
+warning: methods `trigger_corridor_health_degraded`, `trigger_anchor_status_changed`, `trigger_payment_created`, `trigger_corridor_liquidity_dropped`, `trigger_event`, and `get_webhooks_for_event` are never used
+   --> tests/../src/services/webhook_event_service.rs:28:18
+    |
+19  | impl WebhookEventService {
+    | ------------------------ methods in this implementation
+...
+28  |     pub async fn trigger_corridor_health_degraded(
+    |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+50  |     pub async fn trigger_anchor_status_changed(
+    |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+74  |     pub async fn trigger_payment_created(
+    |                  ^^^^^^^^^^^^^^^^^^^^^^^
+...
+100 |     pub async fn trigger_corridor_liquidity_dropped(
+    |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+122 |     async fn trigger_event(
+    |              ^^^^^^^^^^^^^
+...
+158 |     async fn get_webhooks_for_event(
+    |              ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: methods `register_webhook` and `update_last_fired` are never used
+   --> tests/../src/webhooks/mod.rs:203:18
+    |
+193 | impl WebhookService {
+    | ------------------- methods in this implementation
+...
+203 |     pub async fn register_webhook(
+    |                  ^^^^^^^^^^^^^^^^
+...
+539 |     pub async fn update_last_fired(&self, webhook_id: &str) -> anyhow::Result<()> {
+    |                  ^^^^^^^^^^^^^^^^^
+
+warning: struct `WebhookEndpoint` is never constructed
+ --> tests/../src/webhooks/channel.rs:9:12
+  |
+9 | pub struct WebhookEndpoint {
+  |            ^^^^^^^^^^^^^^^
+
+warning: associated function `new` is never used
+  --> tests/../src/webhooks/channel.rs:17:12
+   |
+15 | impl WebhookEndpoint {
+   | -------------------- associated function in this implementation
+16 |     #[must_use]
+17 |     pub fn new(url: String, secret: Option<String>) -> Self {
+   |            ^^^
+
+warning: struct `WebhookChannel` is never constructed
+  --> tests/../src/webhooks/channel.rs:26:12
+   |
+26 | pub struct WebhookChannel {
+   |            ^^^^^^^^^^^^^^
+
+warning: associated function `new` is never used
+  --> tests/../src/webhooks/channel.rs:33:12
+   |
+31 | impl WebhookChannel {
+   | ------------------- associated function in this implementation
+32 |     #[must_use]
+33 |     pub fn new(endpoints: Vec<WebhookEndpoint>) -> Self {
+   |            ^^^
+
+warning: function `determine_severity` is never used
+   --> tests/../src/webhooks/events.rs:103:8
+    |
+103 | pub fn determine_severity(old: &CorridorMetrics, new: &CorridorMetrics) -> String {
+    |        ^^^^^^^^^^^^^^^^^^
+
+warning: `stellar-analysis-backend` (test "webhook_delivery_regression_tests") generated 10 warnings (run `cargo fix --test "webhook_delivery_regression_tests"` to apply 1 suggestion)
+    Finished `test` profile [unoptimized] target(s) in 1m 06s
+     Running tests/webhook_delivery_regression_tests.rs (target/debug/deps/webhook_delivery_regression_tests-a09564ed80adeaca)
+
+running 21 tests
+test webhook_api::tests::event_status_returns_delivery_metadata_for_owner ... ok
+test webhook_api::tests::registration_returns_signing_secret_once_to_authenticated_owner ... FAILED
+test webhook_api::tests::event_status_requires_authentication ... ok
+test webhook_api::tests::event_status_hides_nonowned_missing_and_mismatched_events ... ok
+test webhook_api::tests::versioned_event_status_validates_jwt_at_the_mounted_path ... FAILED
+test webhooks::events::tests::test_corridor_degradation_detection ... ok
+test webhook_event_service::tests::test_filter_application ... ok
+test webhooks::tests::expired_workers_cannot_overwrite_a_new_delivery_outcome ... ok
+test webhooks::tests::retry_delay_is_exponential_and_saturates ... ok
+test webhooks::tests::migration_closes_exhausted_events_without_losing_errors ... ok
+test webhooks::tests::terminal_events_are_not_resurrected_by_status_updates ... ok
+test webhooks::tests::test_event_type_conversion ... ok
+test webhooks::tests::test_webhook_signature ... ok
+test webhooks::tests::webhook_signature_matches_hmac_sha256_test_vector ... ok
+test webhook_dispatcher::tests::inactive_webhook_does_not_send_or_reset_failure_count ... ok
+test webhook_dispatcher::tests::redirects_do_not_contact_another_receiver_or_store_response_bodies ... ok
+test webhooks::tests::stale_workers_cannot_reserve_the_same_due_event ... ok
+test webhook_dispatcher::tests::retries_survive_dispatcher_restart_with_identical_signed_delivery ... ok
+test webhook_dispatcher::tests::legacy_sqlite_timestamp_is_frozen_before_retry ... ok
+test webhook_dispatcher::tests::three_failed_attempts_become_terminal_without_a_fourth_request ... ok
+test webhook_dispatcher::tests::persistence_errors_propagate_and_roll_back_delivery_state ... ok
+
+failures:
+
+---- webhook_api::tests::registration_returns_signing_secret_once_to_authenticated_owner stdout ----
+
+thread 'webhook_api::tests::registration_returns_signing_secret_once_to_authenticated_owner' panicked at /workspace/scratch/1b6b1b08e6b1/toolchain/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/jsonwebtoken-10.4.0/src/crypto/mod.rs:124:40:
+
+Could not automatically determine the process-level CryptoProvider from jsonwebtoken crate features.
+Call CryptoProvider::install_default() before this point to select a provider manually, or make sure exactly one of the 'rust_crypto' and 'aws_lc_rs' features is enabled.
+See the documentation of the CryptoProvider type for more information.
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- webhook_api::tests::versioned_event_status_validates_jwt_at_the_mounted_path stdout ----
+
+thread 'webhook_api::tests::versioned_event_status_validates_jwt_at_the_mounted_path' panicked at /workspace/scratch/1b6b1b08e6b1/toolchain/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/jsonwebtoken-10.4.0/src/crypto/mod.rs:124:40:
+
+Could not automatically determine the process-level CryptoProvider from jsonwebtoken crate features.
+Call CryptoProvider::install_default() before this point to select a provider manually, or make sure exactly one of the 'rust_crypto' and 'aws_lc_rs' features is enabled.
+See the documentation of the CryptoProvider type for more information.
+
+
+
+failures:
+    webhook_api::tests::registration_returns_signing_secret_once_to_authenticated_owner
+    webhook_api::tests::versioned_event_status_validates_jwt_at_the_mounted_path
+
+test result: FAILED. 19 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.40s
+
+error: test failed, to rerun pass `--test webhook_delivery_regression_tests`

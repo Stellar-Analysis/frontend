@@ -5,6 +5,12 @@ It is not started by this repository's Next.js application. The deployed Rust
 service lives in `Stellar-Analysis/backend`; its dispatcher and persistence must
 be integrated there before this frontend PR can establish end-to-end delivery.
 
+A complete patch for the existing backend is included in
+[integration/README.md](integration/README.md), with its pinned source revision,
+application instructions, file digests and native test evidence. It repairs the
+real service's dispatcher, persistence and authenticated API. Keeping that patch
+on this contribution branch does not apply it to the backend or deploy it.
+
 ## Delivery contract
 
 Create a `WebhookEvent` once for a logical event. Retain its `idempotency_key`

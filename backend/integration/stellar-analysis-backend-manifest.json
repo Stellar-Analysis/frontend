@@ -1,0 +1,146 @@
+{
+  "repository": "Stellar-Analysis/backend",
+  "base_commit": "965e916227cf9173cf6ad254a6971429060c1d19",
+  "patch_file": "stellar-analysis-backend.patch",
+  "patch_sha256": "cc062b0ec4f8a65a7bdb4e670fffccf4e01734a97b2f6d26a22fba33fd09ffe5",
+  "patch_bytes": 81743,
+  "files": [
+    {
+      "path": "Cargo.lock",
+      "change": "modified",
+      "base_git_blob_sha1": "5384403de335c663b745b30cf4a47d291a22c90f",
+      "git_blob_sha1": "bfe8f7db1c1dd536eb4bb6296654713ee39d1c5f",
+      "sha256": "8baf28ca19ab32207d0303a5d6218181933af9dc8797831a457fa33bf4d685c6",
+      "bytes": 152720
+    },
+    {
+      "path": "Cargo.toml",
+      "change": "modified",
+      "base_git_blob_sha1": "f0fe093ebbb5c3eb962b3337beb1b764afd0fd39",
+      "git_blob_sha1": "49e1f45338b44b0706b8387d1df7eac9f3501825",
+      "sha256": "62a380fb4859153e2203993a811f49b0b405d3ecaa48e0b5ee634f953f3b6693",
+      "bytes": 3595
+    },
+    {
+      "path": "README.md",
+      "change": "modified",
+      "base_git_blob_sha1": "160135699501a4db3ad4ab8439fc9f19625e7fe4",
+      "git_blob_sha1": "28fcda321a1e418d75bbbd8bf38b7e34c12f1010",
+      "sha256": "8168c50657896a2583bdaeb02668f29bb6db4b781aa9cdf540f7adc2a63fdd99",
+      "bytes": 7226
+    },
+    {
+      "path": "migrations/035_webhook_delivery_retries.sql",
+      "change": "added",
+      "base_git_blob_sha1": null,
+      "git_blob_sha1": "89b735a9e69df27ffafcb461ba1972efc65ab6de",
+      "sha256": "fd6daa775fd668812846eaf02f8b54f5d71ba0e8a6f4fc6cc579a069f3843751",
+      "bytes": 967
+    },
+    {
+      "path": "src/api/v1/mod.rs",
+      "change": "modified",
+      "base_git_blob_sha1": "a3677c8afa44f712a391a15ff1765b6a095b37ac",
+      "git_blob_sha1": "19716833a53a40c461b3ec7ee97154c98c284b90",
+      "sha256": "0cca91308f35b7625ae0bbf94208fe6a8d56bc468b4a70e1ea856e796ec274a3",
+      "bytes": 7465
+    },
+    {
+      "path": "src/api/webhooks.rs",
+      "change": "modified",
+      "base_git_blob_sha1": "9f6d2f041ed6a863b0b2737e9fdd72beeb869ba9",
+      "git_blob_sha1": "f6abcdcaa28edd47c205e032169d9a2d8cc8fe9e",
+      "sha256": "789dd22eaac008c8206ce298edd75b553aba7e92ddad63d1a7cee257e9049836",
+      "bytes": 21565
+    },
+    {
+      "path": "src/main.rs",
+      "change": "modified",
+      "base_git_blob_sha1": "622bfe12d04b476206149e2fbf42cb42bc922bde",
+      "git_blob_sha1": "f51ac143c41c8bec4031030468f3f56af7db3519",
+      "sha256": "266bcd88bc0ad6fb8653c089e827ae405173ecb6a9272185f2887b17e3dcb9d6",
+      "bytes": 23815
+    },
+    {
+      "path": "src/observability/job_metrics.rs",
+      "change": "modified",
+      "base_git_blob_sha1": "bdff8373db34997ab1c1b356357330b68c7fbd62",
+      "git_blob_sha1": "b4d4adc2049f0a740572c4ca09d7a5cf07d1f22c",
+      "sha256": "2b49a000316ffe2aec8908a3fd624633ad4aa4bb227c583b8288362ed4a7dd08",
+      "bytes": 15660
+    },
+    {
+      "path": "src/observability/metrics.rs",
+      "change": "modified",
+      "base_git_blob_sha1": "6e9844267d70b902b2cffcee03ca0fa70a2cc66e",
+      "git_blob_sha1": "be5696ba26547b216050c3284e74e071791a10e0",
+      "sha256": "bac2b49f5dde3edde87f9fe4421b918a9471c5956f027555604021cd0df7f82f",
+      "bytes": 21709
+    },
+    {
+      "path": "src/openapi.rs",
+      "change": "modified",
+      "base_git_blob_sha1": "b836d305a06ec70791eb86061ef379832efad1d0",
+      "git_blob_sha1": "65fdfd66e4d6e57c3f3ba1f2f942d0c15430d9ae",
+      "sha256": "74603fb867ba1e2a07e180fab4198d4cc45e2e421bd8ec5f624558c99b32d2ea",
+      "bytes": 11011
+    },
+    {
+      "path": "src/services/webhook_dispatcher.rs",
+      "change": "modified",
+      "base_git_blob_sha1": "7b507755f72dcf61367cccada4fe96bbcef47f7f",
+      "git_blob_sha1": "b19ab058a26191d8f17cc1cffaafb4450decd479",
+      "sha256": "aaefa272b3c1d1704d1b825a3b0584b001358412fa2410ad32b0088b14cc1996",
+      "bytes": 23398
+    },
+    {
+      "path": "src/services/webhook_event_service.rs",
+      "change": "modified",
+      "base_git_blob_sha1": "6355fb10585cc54cbbcada77714dae15be91e172",
+      "git_blob_sha1": "d0ff11e7932d073698e6c78a2c115820452badf0",
+      "sha256": "86d7b92de201cf6edd2b9bb9cb959bce5da48bdf28917ec3be1d466a0db19689",
+      "bytes": 7274
+    },
+    {
+      "path": "src/webhooks/mod.rs",
+      "change": "modified",
+      "base_git_blob_sha1": "f3cc3d7216050e31ecd826aa986f61454579604c",
+      "git_blob_sha1": "30cec2c83576dcef98a6cb12eeb9d13f3b651117",
+      "sha256": "34ba93c6ac8eac24e87baed6f4123da0cce4747974d1055dc9901744ff1eeb94",
+      "bytes": 26587
+    },
+    {
+      "path": "tests/webhook_delivery_regression_tests.rs",
+      "change": "added",
+      "base_git_blob_sha1": null,
+      "git_blob_sha1": "a471b31a52239d2f9aee22c1ec4fde605d9ad9c7",
+      "sha256": "3f45e28f73b95c5685b789459133e9931e2b21f594f7cbf95c1a0e275434e339",
+      "bytes": 676
+    },
+    {
+      "path": "tests/webhook_event_service_tests.rs",
+      "change": "modified",
+      "base_git_blob_sha1": "2f5e53dabcd3d81b982c58533005e53f36768105",
+      "git_blob_sha1": "1a0b666dc8f9f7d60c6c4d12e594b61362dd0232",
+      "sha256": "0509539470449ee63036e91dcc54e444f58e1ed82d9241a6127e68706857728d",
+      "bytes": 10558
+    }
+  ],
+  "validation": {
+    "native_command": "cargo test --locked --test webhook_delivery_regression_tests --test webhook_event_service_tests",
+    "rust_version": "1.89.0",
+    "exit_code": 0,
+    "passed": 26,
+    "failed": 0,
+    "targets": {
+      "webhook_delivery_regression_tests": 21,
+      "webhook_event_service_tests": 5
+    },
+    "log": "stellar_backend_native_final.log",
+    "log_sha256": "6ce78618e42d89b63006639e6630f2be61c20b2745beb759d5e790ae0ea200c3",
+    "format_check": "passed for all changed Rust files",
+    "baseline_apply_check": "passed",
+    "full_unit_suite": "not passed; unrelated baseline compilation errors documented separately",
+    "applied_file_digest_comparison": "passed for all 15 files after applying patch to original baseline copies"
+  }
+}

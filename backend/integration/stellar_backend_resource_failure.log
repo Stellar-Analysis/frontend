@@ -1,0 +1,62 @@
+   Compiling stellar-analysis-backend v0.1.0 (/workspace/scratch/1b6b1b08e6b1/backlog/stellar_backend)
+warning: unused import: `Span`
+  --> src/observability/health_checks.rs:15:27
+   |
+15 | use tracing::{instrument, Span};
+   |                           ^^^^
+   |
+   = note: `#[warn(unused_imports)]` on by default
+
+warning: unused variable: `client`
+   --> src/api/rpc.rs:283:11
+    |
+283 |     State(client): State<Arc<StellarRpcClient>>,
+    |           ^^^^^^ help: if this is intentional, prefix it with an underscore: `_client`
+    |
+    = note: `#[warn(unused_variables)]` on by default
+
+warning: unused variable: `client`
+   --> src/api/rpc.rs:348:11
+    |
+348 |     State(client): State<Arc<StellarRpcClient>>,
+    |           ^^^^^^ help: if this is intentional, prefix it with an underscore: `_client`
+
+warning: unused variable: `start`
+   --> src/observability/health_checks.rs:175:9
+    |
+175 |     let start = Instant::now();
+    |         ^^^^^ help: if this is intentional, prefix it with an underscore: `_start`
+
+warning: unused variable: `client`
+   --> src/rpc/stellar.rs:517:13
+    |
+517 |         let client = match Client::builder().timeout(request_timeout).build() {
+    |             ^^^^^^ help: if this is intentional, prefix it with an underscore: `_client`
+
+warning: unused variable: `client`
+   --> src/rpc/stellar.rs:638:13
+    |
+638 |         let client = match Client::builder().timeout(request_timeout).build() {
+    |             ^^^^^^ help: if this is intentional, prefix it with an underscore: `_client`
+
+warning: function `compute_transaction_hash` is never used
+  --> src/services/contract.rs:88:4
+   |
+88 | fn compute_transaction_hash(network_passphrase: &str, tx_envelope_xdr: &[u8]) -> Result<[u8; 32]> {
+   |    ^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` on by default
+
+warning: comparison is useless due to type limits
+  --> src/analytics.rs:97:8
+   |
+97 |     if score.total_assets < 0 {
+   |        ^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_comparisons)]` on by default
+
+warning: `stellar-analysis-backend` (lib) generated 8 warnings (run `cargo fix --lib -p stellar-analysis-backend` to apply 1 suggestion)
+error: could not compile `stellar-analysis-backend` (lib); 8 warnings emitted
+
+Caused by:
+  process didn't exit successfully: `/workspace/scratch/1b6b1b08e6b1/toolchain/rustup/toolchains/1.89.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name stellar_analysis_backend --edition=2021 src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no '--allow=clippy::pedantic' '--allow=clippy::nursery' '--warn=clippy::all' '--warn=clippy::unwrap_used' '--allow=clippy::type_complexity' '--allow=clippy::too_many_arguments' '--allow=clippy::should_implement_trait' '--warn=clippy::panic' '--allow=clippy::module_name_repetitions' '--allow=clippy::module_inception' '--allow=clippy::missing_panics_doc' '--allow=clippy::missing_errors_doc' '--allow=clippy::manual_clamp' '--allow=clippy::large_enum_variant' '--allow=clippy::items_after_test_module' '--warn=clippy::expect_used' '--allow=clippy::derivable_impls' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("legacy_sep10_tests"))' -C metadata=600bab79758b6afa -C extra-filename=-111383f0acd43d86 --out-dir /workspace/scratch/1b6b1b08e6b1/backlog/stellar_backend/target/debug/deps -C strip=debuginfo -L dependency=/workspace/scratch/1b6b1b08e6b1/backlog/stellar_backend/target/debug/deps --extern aes_gcm=/workspace/scratch/1b6b1b08e6b1/backlog/stellar_backend/target/debug/deps/libaes_gcm-f87b500bc6422363.rmeta --extern anyhow=/workspace/scratch/1b6b1b08e6b1/backlog/stellar_backend/target/debug/deps/libanyhow-19db838894d4f6f4.rmeta --extern argon2=/workspace/scratch/1b6b1b08e6b1/backlog/stellar_backend/target/debug/deps/libargon2-fc1406f967afe783.rmeta --extern async_graphql=/workspace/scratch/1b6b1b08e6b1/backlog/stellar_backend/target/debug/deps/libasync_graphql-8dbc7a8babc6ec23.rmeta --extern async_graphql_axum=/workspace/scratch/1b6b1b08e6b1/backlog/stellar_backend/target/debug/deps/libasync_graphql_axum-91c1841782254c65.rmeta --extern async_lock=/workspace/scratch/1b6b1b08e6b1/backlog/stellar_backend/target/debug/deps/libasync_lock-828d535d46b56f67.rmeta --extern async_trait=/workspace/scratch/1b6b1b08e6b1/backlog/stellar_backend/target/debug/deps/libasync_trait-99904de6cffa05ce.so --extern axum=/workspace/scratch/1b6b1b08e6b1/backlog/stellar_backend/target/debug/deps/libaxum-a8faffd12c20fd8e.rmeta --extern base64=/workspace/scratch/1b6b1b08e6b1/backlog/stellar_backend/target/debug/deps/libbase64-f3df1778b6728a6f.rmeta --extern chrono=/workspace/scratch/1b6b1b08e6b1/backlog/stellar_backend/target/debug/deps/libchrono-774721e92b8e57c5.rmeta --extern csv=/workspace/scratch/1b6b1b08e6b1/backlog/stellar_backend/target/debug/deps/libcsv-9edbfe54f6265dfb.rmeta --extern dashmap=/workspace/scratch/1b6b1b08e6b1/backlog/stellar_backend/target/debug/deps/libdashmap-b5e1921a415c4a68.rmeta --extern data_encoding=/workspace/scratch/1b6b1b08e6b1/backlog/stellar_backend/target/debug/deps/libdata_encoding-1cd8a1580c28a75a.rmeta --extern dotenvy=/workspace/scratch/1b6b1b08e6b1/backlog/stellar_backend/target/debug/deps/libdotenvy-e61ab49826cf1050.rmeta --extern ed25519_dalek=/workspace/scratch/1b6b1b08e6b1/backlog/stellar_backend/target/debug/deps/libed25519_dalek-3c4ced7de20afb5c.rmeta --extern failsafe=/workspace/scratch/1b6b1b08e6b1/backlog/stellar_backend/target/debug/deps/libfailsafe-21bf3e88fa727b69.rmeta --extern futures=/workspace/scratch/1b6b1b08e6b1/backlog/stellar_backend/target/debug/deps/libfutures-3a94c18dc66a637e.rmeta --extern hex=/workspace/scratch/1b6b1b08e6b1/backlog/stellar_backend/target/debug/deps/libhex-e857c8a2edf078fb.rmeta --extern hmac=/workspace/scratch/1b6b1b08e6b1/backlog/stellar_backend/target/debug/deps/libhmac-ba4d99e9cdba6f30.rmeta --extern http_body_util=/workspace/scratch/1b6b1b08e6b1/backlog/stellar_backend/target/debug/deps/libhttp_body_util-331feb07d007c7f4.rmeta --extern ipnetwork=/workspace/scratch/1b6b1b08e6b1/backlog/stellar_backend/target/debug/deps/libipnetwork-f8825c56a1b07f7c.rmeta --extern jsonwebtoken=/workspace/scratch/1b6b1b08e6b1/backlog/stellar_backend/target/debug/deps/libjsonwebtoken-4469b9316a16b5e3.rmeta --extern lazy_static=/workspace/scratch/1b6b1b08e6b1/backlog/stellar_backend/target/debug/deps/liblazy_static-9ec1bdd762aba982.rmeta --extern lettre=/workspace/scratch/1b6b1b08e6b1/backlog/stellar_backend/target/debug/deps/liblettre-ff0e5eb01c277f14.rmeta --extern log=/workspace/scratch/1b6b1b08e6b1/backlog/stellar_backend/target/debug/deps/liblog-1224bdafb1f8cd4c.rmeta --extern md5=/workspace/scratch/1b6b1b08e6b1/backlog/stellar_backend/target/debug/deps/libmd5-fa7480d1c6144b5a.rmeta --extern ndarray=/workspace/scratch/1b6b1b08e6b1/backlog/stellar_backend/target/debug/deps/libndarray-e48dda3ece46b6d6.rmeta --extern once_cell=/workspace/scratch/1b6b1b08e6b1/backlog/stellar_backend/target/debug/deps/libonce_cell-c1e6cb9cb0e9c149.rmeta --extern opentelemetry=/workspace/scratch/1b6b1b08e6b1/backlog/stellar_backend/target/debug/deps/libopentelemetry-41076ee2f49eeb97.rmeta --extern opentelemetry_otlp=/workspace/scratch/1b6b1b08e6b1/backlog/stellar_backend/target/debug/deps/libopentelemetry_otlp-3d195670407f13e7.rmeta --extern opentelemetry_sdk=/workspace/scratch/1b6b1b08e6b1/backlog/stellar_backend/target/debug/deps/libopentelemetry_sdk-28b8a91a63bafc86.rmeta --extern prometheus=/workspace/scratch/1b6b1b08e6b1/backlog/stellar_backend/target/debug/deps/libprometheus-4cf28eef66b0a63b.rmeta --extern rand=/workspace/scratch/1b6b1b08e6b1/backlog/stellar_backend/target/debug/deps/librand-156950e2331f7533.rmeta --extern redis=/workspace/scratch/1b6b1b08e6b1/backlog/stellar_backend/target/debug/deps/libredis-83b3a67696d5bc0c.rmeta --extern regex=/workspace/scratch/1b6b1b08e6b1/backlog/stellar_backend/target/debug/deps/libregex-c6e765ba68350673.rmeta --extern reqwest=/workspace/scratch/1b6b1b08e6b1/backlog/stellar_backend/target/debug/deps/libreqwest-ec155b5d3176e545.rmeta --extern rust_xlsxwriter=/workspace/scratch/1b6b1b08e6b1/backlog/stellar_backend/target/debug/deps/librust_xlsxwriter-b0800e2b183c831d.rmeta --extern serde=/workspace/scratch/1b6b1b08e6b1/backlog/stellar_backend/target/debug/deps/libserde-5744592ed17ef8c2.rmeta --extern serde_json=/workspace/scratch/1b6b1b08e6b1/backlog/stellar_backend/target/debug/deps/libserde_json-4238bea3d3cb4f54.rmeta --extern sha2=/workspace/scratch/1b6b1b08e6b1/backlog/stellar_backend/target/debug/deps/libsha2-9ad45c77bb727c33.rmeta --extern sqlx=/workspace/scratch/1b6b1b08e6b1/backlog/stellar_backend/target/debug/deps/libsqlx-08671638537a1f8e.rmeta --extern stellar_xdr=/workspace/scratch/1b6b1b08e6b1/backlog/stellar_backend/target/debug/deps/libstellar_xdr-00b6778a68cc9aea.rmeta --extern stellar_sdk=/workspace/scratch/1b6b1b08e6b1/backlog/stellar_backend/target/debug/deps/libstellar_sdk-b168b82a774482a8.rmeta --extern thiserror=/workspace/scratch/1b6b1b08e6b1/backlog/stellar_backend/target/debug/deps/libthiserror-e4f76b8b3cbd4ca7.rmeta --extern tokio=/workspace/scratch/1b6b1b08e6b1/backlog/stellar_backend/target/debug/deps/libtokio-350c09bed3605045.rmeta --extern tokio_tungstenite=/workspace/scratch/1b6b1b08e6b1/backlog/stellar_backend/target/debug/deps/libtokio_tungstenite-99b7be531df960fe.rmeta --extern toml=/workspace/scratch/1b6b1b08e6b1/backlog/stellar_backend/target/debug/deps/libtoml-4822c34dabc99fdb.rmeta --extern tower=/workspace/scratch/1b6b1b08e6b1/backlog/stellar_backend/target/debug/deps/libtower-80fa402008bb99d5.rmeta --extern tower_http=/workspace/scratch/1b6b1b08e6b1/backlog/stellar_backend/target/debug/deps/libtower_http-bea37909f26944fa.rmeta --extern tracing=/workspace/scratch/1b6b1b08e6b1/backlog/stellar_backend/target/debug/deps/libtracing-553ac499056a6916.rmeta --extern tracing_appender=/workspace/scratch/1b6b1b08e6b1/backlog/stellar_backend/target/debug/deps/libtracing_appender-274362ccc05ded1d.rmeta --extern tracing_log=/workspace/scratch/1b6b1b08e6b1/backlog/stellar_backend/target/debug/deps/libtracing_log-64fcdd65ebdd99aa.rmeta --extern tracing_logstash=/workspace/scratch/1b6b1b08e6b1/backlog/stellar_backend/target/debug/deps/libtracing_logstash-69806c2115cdb00d.rmeta --extern tracing_opentelemetry=/workspace/scratch/1b6b1b08e6b1/backlog/stellar_backend/target/debug/deps/libtracing_opentelemetry-27aceef89bb0363f.rmeta --extern tracing_subscriber=/workspace/scratch/1b6b1b08e6b1/backlog/stellar_backend/target/debug/deps/libtracing_subscriber-ab13a0a07d6fdb00.rmeta --extern url=/workspace/scratch/1b6b1b08e6b1/backlog/stellar_backend/target/debug/deps/liburl-c4ee32fce07952fb.rmeta --extern urlencoding=/workspace/scratch/1b6b1b08e6b1/backlog/stellar_backend/target/debug/deps/liburlencoding-bd0f0600e6ed6fc5.rmeta --extern utoipa=/workspace/scratch/1b6b1b08e6b1/backlog/stellar_backend/target/debug/deps/libutoipa-873321ff00e354d5.rmeta --extern utoipa_swagger_ui=/workspace/scratch/1b6b1b08e6b1/backlog/stellar_backend/target/debug/deps/libutoipa_swagger_ui-2ab06d5ac2487bfa.rmeta --extern uuid=/workspace/scratch/1b6b1b08e6b1/backlog/stellar_backend/target/debug/deps/libuuid-92aac9ccaedf92ce.rmeta --extern validator=/workspace/scratch/1b6b1b08e6b1/backlog/stellar_backend/target/debug/deps/libvalidator-873184f7fa329dc2.rmeta -L native=/workspace/scratch/1b6b1b08e6b1/backlog/stellar_backend/target/debug/build/aws-lc-sys-ab05c3b891813490/out -L native=/workspace/scratch/1b6b1b08e6b1/backlog/stellar_backend/target/debug/build/ring-eb3f1d84b677badd/out -L native=/workspace/scratch/1b6b1b08e6b1/backlog/stellar_backend/target/debug/build/libsqlite3-sys-d625df24976f0ac8/out -L native=/workspace/scratch/1b6b1b08e6b1/backlog/stellar_backend/target/debug/build/libsodium-sys-5a14c749ac72a8b8/out/installed/lib -L native=/usr/lib/x86_64-linux-gnu` (signal: 9, SIGKILL: kill)
