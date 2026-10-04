@@ -121,7 +121,7 @@
       "duration_seconds": 0.03
     },
     "execution_scope": "A small Rust manifest imported the exact production cursor_pagination.rs and pagination_queries.rs modules with #[path], using matching direct dependency versions including SQLx 0.8.6 and actual SQLite migrations. The maintained issue test files were executed without altered pagination logic.",
-    "whole_backend_build": "Not completed: shared storage exhausted during dependency compilation.",
+    "whole_backend_build": "Not executed: full-backend dependency fetching hit shared storage exhaustion. Focused module compilation also encountered the resource limit before the successful two-test run.",
     "http_runtime": "Not executed.",
     "patch_check": "Passed git apply --check against the complete clean backend checkout at 965e916227cf9173cf6ad254a6971429060c1d19; git diff --check also passed."
   }

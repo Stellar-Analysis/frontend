@@ -78,8 +78,9 @@ checks replay, original membership and retained corridor payloads.
 
 The run used a small manifest importing the unchanged production module files
 with `#[path]` and matching direct dependency versions. The test files use the
-actual migrations. This was necessary because shared storage exhausted during
-dependency compilation of the full backend crate. Whole-server compilation,
+actual migrations. Full-backend dependency fetching hit shared storage
+exhaustion; the focused compilation also hit that limit before the successful
+two-test run. Whole-server compilation,
 HTTP composition and live-provider performance were not verified by that run.
 
 The maintained command for a backend environment with sufficient storage is:
