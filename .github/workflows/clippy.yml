@@ -22,7 +22,7 @@ jobs:
     # ONLY for `--lib` (production code). Tests are allowed to keep `.unwrap()`
     # / `.expect()` / `panic!` because they are the idiomatic way to express
     # preconditions and assertions in unit tests.
-    - name: Backend Clippy (lib: deny panic-lints; tests: warn)
+    - name: "Backend Clippy (lib: deny panic-lints; tests: warn)"
       working-directory: ./backend
       run: |
         cargo clippy --lib -- \
