@@ -101,26 +101,27 @@ fn cmp_keys(a: &impl CursorKey, b: &impl CursorKey, dir: SortDirection) -> std::
 ///
 /// `rows` must already be filtered to the query; this helper sorts stably by
 /// `(ts, id)` and seeks past `cursor` when present. Designed so unit tests can
-/// prove collision behaviour without a live database.
+/// prove collision behaviour without a live database. Sorting borrows the input
+/// rows; only the returned page is cloned, leaving the input order untouched.
 pub fn paginate<T: CursorKey + Clone>(
     rows: &[T],
     limit: usize,
     cursor: Option<&CompoundCursor>,
     direction: SortDirection,
 ) -> Page<T> {
-    let mut ordered = rows.to_vec();
-    ordered.sort_by(|a, b| cmp_keys(a, b, direction));
+    let mut ordered: Vec<&T> = rows.iter().collect();
+    ordered.sort_by(|a, b| cmp_keys(*a, *b, direction));
 
     let start = match cursor {
         Some(c) => ordered
             .iter()
-            .position(|row| comes_after(row, c, direction))
+            .position(|row| comes_after(*row, c, direction))
             .unwrap_or(ordered.len()),
         None => 0,
     };
 
     let end = start.saturating_add(limit).min(ordered.len());
-    let items = ordered[start..end].to_vec();
+    let items: Vec<T> = ordered[start..end].iter().map(|&row| row.clone()).collect();
     let next_cursor = if end < ordered.len() {
         items.last().map(|row| {
             encode_cursor(&CompoundCursor::new(
@@ -151,5 +152,97 @@ mod tests {
         assert_eq!(decode_cursor("%%%"), Err(PaginateError::InvalidEncoding));
         let junk = URL_SAFE_NO_PAD.encode(b"not-json");
         assert_eq!(decode_cursor(&junk), Err(PaginateError::InvalidPayload));
+    }
+
+    #[test]
+    fn paginate_clones_only_returned_rows() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        struct Row {
+            key: CompoundCursor,
+            payload: String,
+            clones: Rc<Cell<usize>>,
+        }
+
+        impl Clone for Row {
+            fn clone(&self) -> Self {
+                self.clones.set(self.clones.get() + 1);
+                Self {
+                    key: self.key.clone(),
+                    payload: self.payload.clone(),
+                    clones: Rc::clone(&self.clones),
+                }
+            }
+        }
+
+        impl CursorKey for Row {
+            fn cursor_ts(&self) -> i64 {
+                self.key.ts
+            }
+
+            fn cursor_id(&self) -> &str {
+                &self.key.id
+            }
+        }
+
+        let clones = Rc::new(Cell::new(0));
+        let rows: Vec<Row> = [(300, "c"), (100, "a"), (400, "e"), (300, "d"), (200, "b")]
+            .into_iter()
+            .map(|(ts, id)| Row {
+                key: CompoundCursor::new(ts, id),
+                payload: format!("payload-{id}"),
+                clones: Rc::clone(&clones),
+            })
+            .collect();
+        let cases = [
+            (SortDirection::Asc, None, 2, vec!["a", "b"], true),
+            (SortDirection::Desc, None, 2, vec!["e", "d"], true),
+            (
+                SortDirection::Asc,
+                Some(CompoundCursor::new(300, "c")),
+                1,
+                vec!["d"],
+                true,
+            ),
+            (
+                SortDirection::Desc,
+                Some(CompoundCursor::new(300, "d")),
+                1,
+                vec!["c"],
+                true,
+            ),
+            (
+                SortDirection::Asc,
+                Some(CompoundCursor::new(400, "e")),
+                10,
+                vec![],
+                false,
+            ),
+            (SortDirection::Asc, None, 0, vec![], false),
+            (
+                SortDirection::Asc,
+                Some(CompoundCursor::new(200, "b")),
+                usize::MAX,
+                vec!["c", "d", "e"],
+                false,
+            ),
+        ];
+        for (direction, cursor, limit, expected_ids, has_next) in cases {
+            clones.set(0);
+            let page = paginate(&rows, limit, cursor.as_ref(), direction);
+            let ids: Vec<&str> = page.items.iter().map(|row| row.cursor_id()).collect();
+            assert_eq!(ids, expected_ids);
+            assert_eq!(clones.get(), page.items.len());
+            assert_eq!(page.next_cursor.is_some(), has_next);
+            for row in &page.items {
+                assert_eq!(row.payload, format!("payload-{}", row.key.id));
+            }
+            if let Some(next) = &page.next_cursor {
+                assert_eq!(decode_cursor(next).unwrap(), page.items.last().unwrap().key);
+            }
+            let original_ids: Vec<&str> = rows.iter().map(|row| row.cursor_id()).collect();
+            assert_eq!(original_ids, ["c", "a", "e", "d", "b"]);
+        }
     }
 }
