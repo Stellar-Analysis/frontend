@@ -1,0 +1,128 @@
+{
+  "schema_version": 1,
+  "issue": "https://github.com/Stellar-Analysis/frontend/issues/330",
+  "original_pull_request": "https://github.com/Stellar-Analysis/frontend/pull/404",
+  "original_pr_head": "3572cd211d379f853b1c24abaef9b27ac1c2bafb",
+  "target_repository": "https://github.com/Stellar-Analysis/backend",
+  "base_commit": "965e916227cf9173cf6ad254a6971429060c1d19",
+  "patch_file": "stellar-analysis-backend.patch",
+  "patch_sha256": "f9f94b279b114f7c5b12e3b2872a7c3477f93841edbe33a93bbc3dd496c42ea0",
+  "changed_files": [
+    {
+      "path": "README.md",
+      "base_blob_sha": "160135699501a4db3ad4ab8439fc9f19625e7fe4",
+      "blob_sha": "060659ffb38c2afc7690a1a1d1c23c2eff2bc8f1",
+      "sha256": "755aebce63b470b6b36d8e87766c76000a1c093718c7980ac62dd5cef90f4bc9",
+      "bytes": 3583
+    },
+    {
+      "path": "docs/CURSOR_PAGINATION.md",
+      "base_blob_sha": null,
+      "blob_sha": "bb26fe761561fb6f5f1b21f677934614d2007eed",
+      "sha256": "99bd6c7f0257340bc7ec04bac008d3f84fcf7d2fbe25e17e6c92dd6f67b80f83",
+      "bytes": 4550
+    },
+    {
+      "path": "migrations/035_collision_proof_pagination.sql",
+      "base_blob_sha": null,
+      "blob_sha": "ded8e9b044ddb03bedab1109126602546302caab",
+      "sha256": "3a6553690deace11a88864093ce5956a5c3a9f83e500de1fc399d069e2aaad67",
+      "bytes": 3465
+    },
+    {
+      "path": "src/api/anchors.rs",
+      "base_blob_sha": "8c465711d899198fc66845136c21dbe6eccd4677",
+      "blob_sha": "5950de1a8430e8028aab7bb9b2ba68fbce0bede5",
+      "sha256": "838c296244d25d57b36b379551ff024c8c6d877c8f26d036cd0ade8c32f86761",
+      "bytes": 22813
+    },
+    {
+      "path": "src/api/corridors.rs",
+      "base_blob_sha": "ca1cdfeaddf36bdefdc3e1ba49d885ca87d4c044",
+      "blob_sha": "a8541d1e5298a0f2e5ff50f794d595f2548d15cc",
+      "sha256": "9e26b486b5ecb55088a362a38eb9380140f717ce8930a05ac23e236522d38d52",
+      "bytes": 49760
+    },
+    {
+      "path": "src/api/transactions.rs",
+      "base_blob_sha": "dd535f1b7caa3263e2258706acebcdac68b113bd",
+      "blob_sha": "6f6e0e89824dbe3325de0655bcb19abec64a8364",
+      "sha256": "e61c31a298938440678144031eb155d8d8c8aff6393a977ce29fe1668e8763c0",
+      "bytes": 9973
+    },
+    {
+      "path": "src/api/v1/mod.rs",
+      "base_blob_sha": "a3677c8afa44f712a391a15ff1765b6a095b37ac",
+      "blob_sha": "35121928ac33856ea8878007ba90e8d771d6c7fe",
+      "sha256": "04565c1085831bced990f948ddf9f898e189dff7ed9f3dcd788f5d6850de427f",
+      "bytes": 7627
+    },
+    {
+      "path": "src/cursor_pagination.rs",
+      "base_blob_sha": "ffb78118f41034f384bdac55b7df3918a17ce605",
+      "blob_sha": "4c73c7f5b339cd4d2fdf13e319e3398d2b9d0132",
+      "sha256": "895b81b40129cb81fa0ec75098728040a9e1f8e1f0592fc7ac537b224adecbec",
+      "bytes": 6070
+    },
+    {
+      "path": "src/error.rs",
+      "base_blob_sha": "df846e73a1ace4bddf3b5d17305ed2051e1a7260",
+      "blob_sha": "c90af48f30529e7d4ea32dc6b5d9af40a39d57e9",
+      "sha256": "3d88cd4c65e67a357f18bc1e36dc12245ee5a2b0774af71d77de787fbe03e8b6",
+      "bytes": 15877
+    },
+    {
+      "path": "src/lib.rs",
+      "base_blob_sha": "6de97c5a7dbc81abe6a2b243b22cb214544bbd3e",
+      "blob_sha": "489b5af6862f8196c701404123809e41a933cfe3",
+      "sha256": "3e33a7dc51a20106f073dc8cb5d4e266933737567be8688c59aa14b0ef20f293",
+      "bytes": 1797
+    },
+    {
+      "path": "src/openapi.rs",
+      "base_blob_sha": "b836d305a06ec70791eb86061ef379832efad1d0",
+      "blob_sha": "076075d3ad0a4527d2849354541439fae1145b12",
+      "sha256": "9ecd82a4b6abbd468a55802626f7760cc98eba4940206c746e7b00b1c79f935e",
+      "bytes": 11015
+    },
+    {
+      "path": "src/pagination_queries.rs",
+      "base_blob_sha": null,
+      "blob_sha": "cb235a75af35d50fa1b1478c8f818efe4af63ab1",
+      "sha256": "5b2260ddddc89e4788a95a5b48b083b29d1b6055fe4e86d5a43abad156a6fe6e",
+      "bytes": 10415
+    },
+    {
+      "path": "tests/batch_collision_test.rs",
+      "base_blob_sha": null,
+      "blob_sha": "9821a9ad12f4ae57287a4f2320b1f20d1d3b0b4f",
+      "sha256": "9d5665fe761f5b3055e353cd1fcae3c0da63335f4084c7f76d8fce3742edc302",
+      "bytes": 10830
+    },
+    {
+      "path": "tests/concurrent_write_stability_test.rs",
+      "base_blob_sha": null,
+      "blob_sha": "a0784355653f4224aba9c4cf1bbea59b83b0eef2",
+      "sha256": "6f01ad4baf19b1fe575a18c4a24eae6dad399ad535c335a233dbad62f29e3293",
+      "bytes": 11228
+    }
+  ],
+  "validation": {
+    "batch_collision_test": {
+      "result": "passed",
+      "passed": 1,
+      "failed": 0,
+      "duration_seconds": 0.04
+    },
+    "concurrent_write_stability_test": {
+      "result": "passed",
+      "passed": 1,
+      "failed": 0,
+      "duration_seconds": 0.03
+    },
+    "execution_scope": "A small Rust manifest imported the exact production cursor_pagination.rs and pagination_queries.rs modules with #[path], using matching direct dependency versions including SQLx 0.8.6 and actual SQLite migrations. The maintained issue test files were executed without altered pagination logic.",
+    "whole_backend_build": "Not executed: full-backend dependency fetching hit shared storage exhaustion. Focused module compilation also encountered the resource limit before the successful two-test run.",
+    "http_runtime": "Not executed.",
+    "patch_check": "Passed git apply --check against the complete clean backend checkout at 965e916227cf9173cf6ad254a6971429060c1d19; git diff --check also passed."
+  }
+}
