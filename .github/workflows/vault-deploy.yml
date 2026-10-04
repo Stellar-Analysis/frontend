@@ -13,6 +13,8 @@ env:
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      VAULT_AUTH_CONFIGURED: ${{ secrets.VAULT_ADDR != '' }}
     permissions:
       contents: read
       id-token: write  # Required for GitHub OIDC token
@@ -27,13 +29,13 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Set fallback test secrets when Vault is unavailable
-        if: ${{ secrets.VAULT_ADDR == '' }}
+        if: ${{ env.VAULT_AUTH_CONFIGURED != 'true' }}
         run: |
           echo "JWT_SECRET=fallback-test-secret-value-at-least-32-characters" >> $GITHUB_ENV
           echo "DATABASE_URL=sqlite::memory:" >> $GITHUB_ENV
 
       - name: Get Vault Token via GitHub OIDC
-        if: ${{ secrets.VAULT_ADDR != '' }}
+        if: ${{ env.VAULT_AUTH_CONFIGURED == 'true' }}
         id: vault-auth
         run: |
           TOKEN=$(curl -s -X POST \
