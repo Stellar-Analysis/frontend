@@ -1,0 +1,2149 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index 5384403de335c663b745b30cf4a47d291a22c90f..bfe8f7db1c1dd536eb4bb6296654713ee39d1c5f 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -355,6 +355,7 @@
+ checksum = "5ec2f1fc3ec205783a5da9a7e6c1509cc69dedf09a1949e412c1e18469326d00"
+ dependencies = [
+  "aws-lc-sys",
++ "untrusted 0.7.1",
+  "zeroize",
+ ]
+ 
+@@ -2255,6 +2256,7 @@
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "eba32bfb4ffdeaca3e34431072faf01745c9b26d25504aa7a6cf5684334fc4fc"
+ dependencies = [
++ "aws-lc-rs",
+  "base64 0.22.1",
+  "getrandom 0.2.17",
+  "js-sys",
+@@ -3589,7 +3591,7 @@
+  "cfg-if",
+  "getrandom 0.2.17",
+  "libc",
+- "untrusted",
++ "untrusted 0.9.0",
+  "windows-sys 0.52.0",
+ ]
+ 
+@@ -3817,7 +3819,7 @@
+  "aws-lc-rs",
+  "ring",
+  "rustls-pki-types",
+- "untrusted",
++ "untrusted 0.9.0",
+ ]
+ 
+ [[package]]
+@@ -5224,6 +5226,12 @@
+ 
+ [[package]]
+ name = "untrusted"
++version = "0.7.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "a156c684c91ea7d62626509bce3cb4e1d9ed5c4d978f7b4352658f96a4c26b4a"
++
++[[package]]
++name = "untrusted"
+ version = "0.9.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
+diff --git a/Cargo.toml b/Cargo.toml
+index f0fe093ebbb5c3eb962b3337beb1b764afd0fd39..49e1f45338b44b0706b8387d1df7eac9f3501825 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -74,7 +74,7 @@
+ stellar_sdk = "0.1"
+ base64 = "0.22"
+ ed25519-dalek = "2.1"
+-jsonwebtoken = "10.4"
++jsonwebtoken = { version = "10.4", features = ["aws_lc_rs"] }
+ utoipa = { version = "4.2", features = ["axum_extras", "chrono", "uuid"] }
+ utoipa-swagger-ui = { version = "9.0", features = ["axum"] }
+ urlencoding = "2.1"
+diff --git a/README.md b/README.md
+index 160135699501a4db3ad4ab8439fc9f19625e7fe4..28fcda321a1e418d75bbbd8bf38b7e34c12f1010 100644
+--- a/README.md
++++ b/README.md
+@@ -82,6 +82,72 @@
+ 
+ Integration/load tests live in `tests/` and `load-tests/`.
+ 
++## Outbound webhooks
++
++An authenticated `POST /api/webhooks` (or `POST /api/v1/webhooks`) returns the
++subscription fields plus its signing `secret` once, with `Cache-Control:
++no-store`. Save this secret in the receiving integration when you register.
++List, detail, and delivery-status responses do not return it.
++
++Each queued event has a persistent UUID. Its serialized JSON envelope (`id`,
++`event`, `timestamp`, `data`) is saved before delivery and reused byte for byte
++on retries, including after a dispatcher restart. Consumers should deduplicate
++using `X-Zapier-Delivery-ID`, which is the same value as the envelope's `id` and
++the `event_id` returned by `POST /api/webhooks/{id}/test`.
++
++Requests also include `X-Zapier-Event`, `X-Zapier-Timestamp` (the event creation
++time in Unix seconds), and `X-Zapier-Signature`. The signature is
++`sha256=<hex HMAC-SHA256>` over the exact raw request body, keyed with that
++subscription's secret. Verify the raw bytes before parsing JSON or acting on
++an event. Re-serializing JSON before checking the signature can change the
++signed bytes. The creation timestamp remains stable across retries; use the
++event ID to deduplicate an already accepted event.
++
++Any non-2xx response or transport failure counts as a failed attempt. Redirects
++are treated as failures without following another URL, and failure records do
++not include the receiver's response body. Delivery becomes terminal after
++**three recorded failures**, including the initial request, with a ten-second
++timeout on each request. Retry due times are stored
++in SQLite: the delays after the first and second failures are five and ten
++seconds. The exponential delay is capped at 300 seconds if the attempt limit
++is increased. The dispatcher polls every five seconds, so actual delivery can
++occur later than the due time. The third failure becomes terminal `failed`.
++Inactive or missing subscriptions also become terminal without another send.
++
++A thirty-second reservation prevents another worker from immediately sending
++the same due event and makes events recoverable after a worker stops. Delivery
++is at least once: an accepted HTTP request whose database update fails can be
++sent again with the same ID and exact body. Crashes and failed database writes
++can therefore cause more physical sends than the recorded failure count.
++Reservation tokens prevent a resumed, expired worker from overwriting a newer
++worker's result. Successful delivery and the
++subscription's `last_fired_at` are recorded in one transaction; database
++failures are reported by the dispatcher instead of reported as success.
++
++Authenticated subscribers can query
++`GET /api/webhooks/{webhook_id}/events/{event_id}` for `status` (`pending`,
++`delivered`, or `failed`), `retries` (failed attempts, retained after success),
++`last_error`, `created_at`, `next_attempt_at`, `last_attempt_at`, and
++`delivered_at`. The latter three timestamps use Unix seconds and are nullable;
++while a worker holds an event, `next_attempt_at` is its reservation expiry.
++Only the subscription's owner can access the record. Secrets and event data
++are excluded from this response.
++The same resource is available at
++`GET /api/v1/webhooks/{webhook_id}/events/{event_id}` with a valid access-token
++`Authorization: Bearer ...` header.
++
++Migration `035_webhook_delivery_retries.sql` preserves existing raw payloads
++and recorded errors, marks previously stranded exhausted events as `failed`,
++and freezes legacy envelopes from their stored ID and creation time on their
++next delivery. Attempts sent before this migration used a different ID and
++cannot be retroactively deduplicated with their new, stable ID.
++
++Run the focused dispatcher, signature, migration, and API tests with:
++
++```bash
++cargo test --test webhook_delivery_regression_tests --test webhook_event_service_tests
++```
++
+ ## Observability
+ 
+ - **Logs** — set `LOGSTASH_ENABLED=true` to forward structured logs to an ELK stack (see `docker-compose.elk.yml` in the core repo)
+diff --git a/migrations/035_webhook_delivery_retries.sql b/migrations/035_webhook_delivery_retries.sql
+new file mode 100644
+index 0000000000000000000000000000000000000000..89b735a9e69df27ffafcb461ba1972efc65ab6de
+--- /dev/null
++++ b/migrations/035_webhook_delivery_retries.sql
+@@ -0,0 +1,18 @@
++-- Keep the serialized delivery envelope and retry schedule across restarts.
++-- Existing payloads remain unchanged; the dispatcher freezes legacy envelopes
++-- using their stored event ID and creation time before their next delivery.
++ALTER TABLE webhook_events ADD COLUMN delivery_payload TEXT;
++ALTER TABLE webhook_events ADD COLUMN next_attempt_at INTEGER;
++ALTER TABLE webhook_events ADD COLUMN last_attempt_at INTEGER;
++ALTER TABLE webhook_events ADD COLUMN delivered_at INTEGER;
++ALTER TABLE webhook_events ADD COLUMN delivery_token TEXT;
++
++-- The old dispatcher stranded the third failure as pending, although its query
++-- excluded retries >= 3. Preserve the recorded error and make those rows terminal.
++UPDATE webhook_events
++SET status = 'failed',
++    last_error = COALESCE(last_error, 'maximum_attempts_exhausted')
++WHERE status = 'pending' AND retries >= 3;
++
++CREATE INDEX IF NOT EXISTS idx_webhook_events_due
++ON webhook_events(status, next_attempt_at, created_at);
+diff --git a/src/api/v1/mod.rs b/src/api/v1/mod.rs
+index a3677c8afa44f712a391a15ff1765b6a095b37ac..19716833a53a40c461b3ec7ee97154c98c284b90 100644
+--- a/src/api/v1/mod.rs
++++ b/src/api/v1/mod.rs
+@@ -131,9 +131,10 @@
+         .with_state(app_state)
+         .layer(middleware::from_fn(auth_middleware));
+ 
+-    let protected_webhook_routes = Router::new()
+-        .nest("/webhooks", webhooks::routes(pool.clone()))
+-        .layer(middleware::from_fn(auth_middleware));
++    let protected_webhook_routes = webhooks::versioned_routes(pool.clone());
++
++    let unversioned_webhook_routes =
++        webhooks::routes(pool.clone()).layer(middleware::from_fn(auth_middleware));
+ 
+     // 4. RPC routes
+     let rpc_routes = Router::new()
+@@ -189,6 +190,7 @@
+         .route("/api/version", get(get_api_version))
+         // Preserve existing unversioned endpoints for backward compatibility.
+         .merge(v1_router)
++        .merge(unversioned_webhook_routes)
+         .layer(cors)
+         .layer(middleware::from_fn(
+             crate::request_id::request_id_middleware,
+diff --git a/src/api/webhooks.rs b/src/api/webhooks.rs
+index 9f6d2f041ed6a863b0b2737e9fdd72beeb869ba9..f6abcdcaa28edd47c205e032169d9a2d8cc8fe9e 100644
+--- a/src/api/webhooks.rs
++++ b/src/api/webhooks.rs
+@@ -43,11 +43,16 @@
+ 
+     let service = WebhookService::new(db);
+     let response = service
+-        .register_webhook(&auth_user.user_id, request)
++        .register_webhook_with_secret(&auth_user.user_id, request)
+         .await
+         .map_err(|e| WebhookApiError::ServerError(e.to_string()))?;
+ 
+-    Ok((StatusCode::CREATED, Json(response)).into_response())
++    Ok((
++        StatusCode::CREATED,
++        [("Cache-Control", "no-store")],
++        Json(response),
++    )
++        .into_response())
+ }
+ 
+ /// GET /api/webhooks - List webhooks for authenticated user
+@@ -181,6 +186,37 @@
+     Ok((StatusCode::OK, Json(response)).into_response())
+ }
+ 
++/// GET /api/webhooks/:id/events/:event_id - Get delivery status for an owned webhook
++#[utoipa::path(
++    get,
++    path = "/api/webhooks/{id}/events/{event_id}",
++    params(
++        ("id" = String, Path, description = "Webhook ID"),
++        ("event_id" = String, Path, description = "Webhook event ID")
++    ),
++    responses(
++        (status = 200, description = "Webhook event delivery status"),
++        (status = 401, description = "Unauthorized"),
++        (status = 404, description = "Webhook event not found"),
++        (status = 500, description = "Internal server error")
++    ),
++    tag = "Webhooks"
++)]
++pub async fn get_webhook_event_status(
++    State(db): State<SqlitePool>,
++    auth_user: AuthUser,
++    Path((webhook_id, event_id)): Path<(String, String)>,
++) -> Result<Response, WebhookApiError> {
++    let service = WebhookService::new(db);
++    let event = service
++        .get_event_status(&webhook_id, &event_id, &auth_user.user_id)
++        .await
++        .map_err(|e| WebhookApiError::ServerError(e.to_string()))?
++        .ok_or_else(|| WebhookApiError::NotFound("Webhook event not found".to_string()))?;
++
++    Ok((StatusCode::OK, Json(event)).into_response())
++}
++
+ /// POST /api/webhooks/:id/test - Queue a test event for delivery
+ #[utoipa::path(
+     post,
+@@ -263,9 +299,316 @@
+ 
+ /// Create webhook routes
+ pub fn routes(db: SqlitePool) -> Router {
++    Router::new().nest("/api/webhooks", resource_routes(db))
++}
++
++/// Resource-relative routes for mounting under the versioned API.
++pub(crate) fn resource_routes(db: SqlitePool) -> Router {
+     Router::new()
+-        .route("/api/webhooks", post(register_webhook).get(list_webhooks))
+-        .route("/api/webhooks/:id", get(get_webhook).delete(delete_webhook))
+-        .route("/api/webhooks/:id/test", post(test_webhook))
++        .route("/", post(register_webhook).get(list_webhooks))
++        .route("/:id", get(get_webhook).delete(delete_webhook))
++        .route("/:id/events/:event_id", get(get_webhook_event_status))
++        .route("/:id/test", post(test_webhook))
+         .with_state(db)
+ }
++
++/// Protected routes mounted by the v1 API, with the existing nested paths
++/// retained as aliases for clients that already use them.
++pub(crate) fn versioned_routes(db: SqlitePool) -> Router {
++    Router::new()
++        .nest("/webhooks", resource_routes(db.clone()).merge(routes(db)))
++        .layer(axum::middleware::from_fn(
++            crate::auth_middleware::auth_middleware,
++        ))
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use axum::{body::Body, http::Request};
++    use sqlx::sqlite::SqlitePoolOptions;
++    use tower::ServiceExt;
++
++    async fn event_status_db() -> anyhow::Result<SqlitePool> {
++        let pool = SqlitePoolOptions::new()
++            .max_connections(1)
++            .connect("sqlite::memory:")
++            .await?;
++
++        sqlx::query("CREATE TABLE users (id TEXT PRIMARY KEY)")
++            .execute(&pool)
++            .await?;
++        sqlx::raw_sql(include_str!("../../migrations/019_oauth_webhooks.sql"))
++            .execute(&pool)
++            .await?;
++        sqlx::raw_sql(include_str!(
++            "../../migrations/035_webhook_delivery_retries.sql"
++        ))
++        .execute(&pool)
++        .await?;
++        sqlx::raw_sql(
++            "INSERT INTO users (id) VALUES ('owner'), ('other');
++             INSERT INTO webhooks (id, user_id, url, event_types, secret)
++             VALUES ('webhook-1', 'owner', 'https://example.com/webhook', 'test', 'private-secret'),
++                    ('webhook-other', 'other', 'https://example.com/other', 'test', 'other-secret');
++             INSERT INTO webhook_events
++                 (id, webhook_id, event_type, payload, status, retries, last_error,
++                  created_at, next_attempt_at, last_attempt_at, delivered_at)
++             VALUES
++                 ('event-1', 'webhook-1', 'test', '{\"private\":\"payload\"}', 'pending', 2,
++                  'Webhook failed with status 503', '2023-11-14T22:13:20Z',
++                  1700000090, 1700000030, NULL);",
++        )
++        .execute(&pool)
++        .await?;
++
++        Ok(pool)
++    }
++
++    fn event_status_request(
++        webhook_id: &str,
++        event_id: &str,
++        user_id: Option<&str>,
++    ) -> Result<Request<Body>, axum::http::Error> {
++        let mut request = Request::builder()
++            .uri(format!("/api/webhooks/{webhook_id}/events/{event_id}"))
++            .body(Body::empty())?;
++
++        if let Some(user_id) = user_id {
++            // Auth middleware adds this extension only after validating the access token.
++            request.extensions_mut().insert(AuthUser {
++                user_id: user_id.to_string(),
++                username: user_id.to_string(),
++            });
++        }
++
++        Ok(request)
++    }
++
++    #[tokio::test]
++    async fn event_status_requires_authentication() -> anyhow::Result<()> {
++        let app = routes(event_status_db().await?);
++        let response = app
++            .oneshot(event_status_request("webhook-1", "event-1", None)?)
++            .await?;
++
++        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
++        Ok(())
++    }
++
++    #[tokio::test]
++    async fn event_status_returns_delivery_metadata_for_owner() -> anyhow::Result<()> {
++        let app = routes(event_status_db().await?);
++        let response = app
++            .oneshot(event_status_request("webhook-1", "event-1", Some("owner"))?)
++            .await?;
++
++        assert_eq!(response.status(), StatusCode::OK);
++        let body = axum::body::to_bytes(response.into_body(), 4096).await?;
++        let body: serde_json::Value = serde_json::from_slice(&body)?;
++        assert_eq!(
++            body,
++            json!({
++                "id": "event-1",
++                "webhook_id": "webhook-1",
++                "event_type": "test",
++                "status": "pending",
++                "retries": 2,
++                "last_error": "Webhook failed with status 503",
++                "created_at": "2023-11-14T22:13:20Z",
++                "next_attempt_at": 1700000090_i64,
++                "last_attempt_at": 1700000030_i64,
++                "delivered_at": null
++            })
++        );
++        Ok(())
++    }
++
++    #[tokio::test]
++    async fn event_status_hides_nonowned_missing_and_mismatched_events() -> anyhow::Result<()> {
++        let app = routes(event_status_db().await?);
++
++        for (webhook_id, event_id, user_id) in [
++            ("webhook-1", "event-1", "other"),
++            ("webhook-other", "event-1", "other"),
++            ("missing-webhook", "event-1", "owner"),
++            ("webhook-1", "missing-event", "owner"),
++        ] {
++            let response = app
++                .clone()
++                .oneshot(event_status_request(webhook_id, event_id, Some(user_id))?)
++                .await?;
++
++            assert_eq!(response.status(), StatusCode::NOT_FOUND);
++            let body = axum::body::to_bytes(response.into_body(), 4096).await?;
++            let body: serde_json::Value = serde_json::from_slice(&body)?;
++            assert_eq!(body, json!({"error": "Webhook event not found"}));
++        }
++
++        Ok(())
++    }
++
++    #[tokio::test]
++    async fn versioned_event_status_validates_jwt_at_the_mounted_path() -> anyhow::Result<()> {
++        use crate::auth::Claims;
++        use crate::auth_middleware::JwtSecret;
++        use jsonwebtoken::{encode, EncodingKey, Header};
++        use std::sync::Arc;
++
++        let secret = "webhook-status-test-key-at-least-32-bytes";
++        let app = Router::new()
++            .nest("/api/v1", versioned_routes(event_status_db().await?))
++            .layer(axum::Extension(JwtSecret(Arc::from(secret))));
++        let token = |user_id: &str, token_type: &str, key: &str| {
++            let now = chrono::Utc::now().timestamp();
++            encode(
++                &Header::default(),
++                &Claims {
++                    sub: user_id.to_string(),
++                    username: user_id.to_string(),
++                    iat: now,
++                    exp: now + 3600,
++                    token_type: token_type.to_string(),
++                },
++                &EncodingKey::from_secret(key.as_bytes()),
++            )
++        };
++
++        let owner_token = token("owner", "access", secret)?;
++        for (uri, bearer, expected) in [
++            (
++                "/api/v1/webhooks/webhook-1/events/event-1",
++                None,
++                StatusCode::UNAUTHORIZED,
++            ),
++            (
++                "/api/v1/webhooks/webhook-1/events/event-1",
++                Some("not-a-token".to_string()),
++                StatusCode::UNAUTHORIZED,
++            ),
++            (
++                "/api/v1/webhooks/webhook-1/events/event-1",
++                Some(token("owner", "access", "wrong-key")?),
++                StatusCode::UNAUTHORIZED,
++            ),
++            (
++                "/api/v1/webhooks/webhook-1/events/event-1",
++                Some(token("owner", "refresh", secret)?),
++                StatusCode::UNAUTHORIZED,
++            ),
++            (
++                "/api/v1/webhooks/webhook-1/events/event-1",
++                Some(token("other", "access", secret)?),
++                StatusCode::NOT_FOUND,
++            ),
++            (
++                "/api/v1/webhooks/webhook-1/events/event-1",
++                Some(owner_token.clone()),
++                StatusCode::OK,
++            ),
++            (
++                "/api/v1/webhooks/api/webhooks/webhook-1/events/event-1",
++                Some(owner_token),
++                StatusCode::OK,
++            ),
++        ] {
++            let mut request = Request::builder().uri(uri);
++            if let Some(bearer) = bearer {
++                request = request.header("Authorization", format!("Bearer {bearer}"));
++            }
++            let response = app.clone().oneshot(request.body(Body::empty())?).await?;
++            assert_eq!(response.status(), expected, "route {uri}");
++        }
++        Ok(())
++    }
++
++    #[tokio::test]
++    async fn registration_returns_signing_secret_once_to_authenticated_owner() -> anyhow::Result<()>
++    {
++        use crate::auth::Claims;
++        use crate::auth_middleware::JwtSecret;
++        use crate::webhooks::WebhookSignature;
++        use jsonwebtoken::{encode, EncodingKey, Header};
++        use std::sync::Arc;
++
++        let pool = event_status_db().await?;
++        let jwt_secret = "webhook-registration-test-key-at-least-32-bytes";
++        let app = Router::new()
++            .nest("/api/v1", versioned_routes(pool.clone()))
++            .layer(axum::Extension(JwtSecret(Arc::from(jwt_secret))));
++        let now = chrono::Utc::now().timestamp();
++        let token = encode(
++            &Header::default(),
++            &Claims {
++                sub: "owner".to_string(),
++                username: "owner".to_string(),
++                iat: now,
++                exp: now + 3600,
++                token_type: "access".to_string(),
++            },
++            &EncodingKey::from_secret(jwt_secret.as_bytes()),
++        )?;
++        let payload = json!({
++            "url": "https://example.com/receiver",
++            "event_types": ["test"]
++        });
++        let registration = |authorization: Option<&str>| {
++            let mut request = Request::builder()
++                .method("POST")
++                .uri("/api/v1/webhooks")
++                .header("Content-Type", "application/json");
++            if let Some(authorization) = authorization {
++                request = request.header("Authorization", format!("Bearer {authorization}"));
++            }
++            request.body(Body::from(payload.to_string()))
++        };
++
++        let denied = app.clone().oneshot(registration(None)?).await?;
++        assert_eq!(denied.status(), StatusCode::UNAUTHORIZED);
++        let response = app.clone().oneshot(registration(Some(&token))?).await?;
++        assert_eq!(response.status(), StatusCode::CREATED);
++        assert_eq!(response.headers().get("Cache-Control").unwrap(), "no-store");
++        let body = axum::body::to_bytes(response.into_body(), 4096).await?;
++        let body: serde_json::Value = serde_json::from_slice(&body)?;
++        let webhook_id = body["id"].as_str().unwrap();
++        let secret = body["secret"].as_str().unwrap();
++        assert!(!secret.is_empty());
++
++        let service = WebhookService::new(pool);
++        let stored = service.get_webhook(webhook_id).await?.unwrap();
++        assert_eq!(secret, stored.secret);
++        let sample_body = r#"{"event":"test","data":{"value":42}}"#;
++        let signature = WebhookSignature::sign(sample_body, &stored.secret);
++        assert!(WebhookSignature::verify(sample_body, secret, &signature));
++        let event_id = service
++            .create_webhook_event(webhook_id, "test", json!({"value": 42}))
++            .await?;
++
++        for path in [
++            "/api/v1/webhooks".to_string(),
++            format!("/api/v1/webhooks/{webhook_id}"),
++            format!("/api/v1/webhooks/{webhook_id}/events/{event_id}"),
++        ] {
++            let response = app
++                .clone()
++                .oneshot(
++                    Request::builder()
++                        .uri(&path)
++                        .header("Authorization", format!("Bearer {token}"))
++                        .body(Body::empty())?,
++                )
++                .await?;
++            assert_eq!(response.status(), StatusCode::OK, "route {path}");
++            let body = axum::body::to_bytes(response.into_body(), 8192).await?;
++            let body: serde_json::Value = serde_json::from_slice(&body)?;
++            assert!(body.get("secret").is_none());
++            if let Some(webhooks) = body["webhooks"].as_array() {
++                assert!(webhooks
++                    .iter()
++                    .all(|webhook| webhook.get("secret").is_none()));
++            }
++            assert!(!body.to_string().contains(secret));
++        }
++        Ok(())
++    }
++}
+diff --git a/src/main.rs b/src/main.rs
+index 622bfe12d04b476206149e2fbf42cb42bc922bde..f51ac143c41c8bec4031030468f3f56af7db3519 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -40,9 +40,8 @@
+         concurrency_limit_middleware, panic_recovery_middleware, ApiVersioning, BatchEndpoints,
+         ConcurrencyLimitState, DatabaseSchemaSeparation, DeprecationWarnings, ETagCachingSupport,
+         FieldSelectionParameter, MobilePaginationEndpoints, MobileRequestLogging,
+-        NetworkAwareRpcClient, NetworkContextMiddleware, PushNotificationService,
+-        ResponseCompression, WebSocketRealTimeUpdates, PushNotificationRegistration,
+-        Sep10ForMobile,
++        NetworkAwareRpcClient, NetworkContextMiddleware, PushNotificationRegistration,
++        PushNotificationService, ResponseCompression, Sep10ForMobile, WebSocketRealTimeUpdates,
+     },
+     observability::logging::request_response_logging_middleware,
+     observability::metrics as obs_metrics,
+@@ -223,9 +222,8 @@
+     tracing::info!("Push notification service initialized");
+ 
+     // Initialize SEP-10 for mobile (issue #1376)
+-    let _sep10_for_mobile = Sep10ForMobile::new(
+-        stellar_analysis_backend::models::sep10_for_mobile::Config::default(),
+-    );
++    let _sep10_for_mobile =
++        Sep10ForMobile::new(stellar_analysis_backend::models::sep10_for_mobile::Config::default());
+     tracing::info!("SEP-10 for mobile initialized");
+ 
+     // Initialize push notification registration (issue #1377)
+@@ -506,11 +504,21 @@
+         .route("/graphql/health", get(graphql_health_handler))
+         .layer(axum::Extension(Arc::clone(&graphql_api)));
+ 
++    // Protected routes consume the configured secret through this extension.
++    let jwt_secret = std::env::var("JWT_SECRET")
++        .context("JWT_SECRET is required for authenticated API routes")?;
++
+     let app = base_routes
+         .nest("/admin", admin_routes)
+         .merge(graphql_routes)
+         .merge(ws_routes)
+-        .route("/swagger-ui/*path", get(|| async { "Swagger UI documentation" }))
++        .route(
++            "/swagger-ui/*path",
++            get(|| async { "Swagger UI documentation" }),
++        )
++        .layer(axum::Extension(
++            stellar_analysis_backend::auth_middleware::JwtSecret(Arc::from(jwt_secret)),
++        ))
+         .layer(middleware::from_fn(
+             stellar_analysis_backend::payload_limit::payload_limit_middleware,
+         ))
+@@ -544,7 +552,7 @@
+                 .br(true)
+                 .quality(compression_level)
+                 .compress_when(
+-                    SizeAbove::new(compression_min_size)
++                    SizeAbove::new(u64::from(compression_min_size))
+                         .and(NotForContentType::IMAGES)
+                         .and(NotForContentType::SSE),
+                 ),
+diff --git a/src/observability/job_metrics.rs b/src/observability/job_metrics.rs
+index bdff8373db34997ab1c1b356357330b68c7fbd62..b4d4adc2049f0a740572c4ca09d7a5cf07d1f22c 100644
+--- a/src/observability/job_metrics.rs
++++ b/src/observability/job_metrics.rs
+@@ -269,7 +269,7 @@
+ 
+         // Record metrics
+         JOB_EXECUTIONS_TOTAL
+-            .with_label_values(&[job_name, "success"])
++            .with_label_values::<&str>(&[job_name, "success"])
+             .inc();
+         JOB_DURATION_SECONDS
+             .with_label_values(&[job_name])
+@@ -296,7 +296,7 @@
+ 
+         // Record metrics
+         JOB_EXECUTIONS_TOTAL
+-            .with_label_values(&[job_name, "failure"])
++            .with_label_values::<&str>(&[job_name, "failure"])
+             .inc();
+         JOB_FAILURES_TOTAL
+             .with_label_values(&[job_name, &error_type])
+@@ -327,10 +327,10 @@
+ 
+         // Record metrics
+         JOB_EXECUTIONS_TOTAL
+-            .with_label_values(&[job_name, "timeout"])
++            .with_label_values::<&str>(&[job_name, "timeout"])
+             .inc();
+         JOB_FAILURES_TOTAL
+-            .with_label_values(&[job_name, "timeout"])
++            .with_label_values::<&str>(&[job_name, "timeout"])
+             .inc();
+         JOB_DURATION_SECONDS
+             .with_label_values(&[job_name])
+diff --git a/src/observability/metrics.rs b/src/observability/metrics.rs
+index 6e9844267d70b902b2cffcee03ca0fa70a2cc66e..be5696ba26547b216050c3284e74e071791a10e0 100644
+--- a/src/observability/metrics.rs
++++ b/src/observability/metrics.rs
+@@ -316,7 +316,7 @@
+ 
+ pub fn record_http_error(status_code: u16, method: &str, path: &str) {
+     HTTP_ERRORS_TOTAL
+-        .with_label_values(&[&status_code.to_string(), method, path])
++        .with_label_values::<&str>(&[&status_code.to_string(), method, path])
+         .inc();
+     ERRORS_TOTAL.inc();
+ }
+diff --git a/src/openapi.rs b/src/openapi.rs
+index b836d305a06ec70791eb86061ef379832efad1d0..65fdfd66e4d6e57c3f3ba1f2f942d0c15430d9ae 100644
+--- a/src/openapi.rs
++++ b/src/openapi.rs
+@@ -110,6 +110,7 @@
+         crate::api::webhooks::get_webhook,
+         crate::api::webhooks::delete_webhook,
+         crate::api::webhooks::test_webhook,
++        crate::api::webhooks::get_webhook_event_status,
+         // Account Merges
+         crate::api::account_merges::get_account_merge_stats,
+         crate::api::account_merges::get_recent_account_merges,
+diff --git a/src/services/webhook_dispatcher.rs b/src/services/webhook_dispatcher.rs
+index 7b507755f72dcf61367cccada4fe96bbcef47f7f..b19ab058a26191d8f17cc1cffaafb4450decd479 100644
+--- a/src/services/webhook_dispatcher.rs
++++ b/src/services/webhook_dispatcher.rs
+@@ -4,9 +4,12 @@
+ use reqwest::Client;
+ use sqlx::SqlitePool;
+ use std::time::Duration;
+-use uuid::Uuid;
+-
+-use crate::webhooks::{WebhookEventEnvelope, WebhookService, WebhookSignature};
++
++use crate::webhooks::{
++    WebhookEventEnvelope, WebhookService, WebhookSignature, MAX_WEBHOOK_ATTEMPTS,
++};
++
++const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+ 
+ /// Webhook dispatcher - sends events to webhooks asynchronously
+ pub struct WebhookDispatcher {
+@@ -19,7 +22,8 @@
+     #[must_use]
+     pub fn new(db: SqlitePool) -> Self {
+         let http_client = Client::builder()
+-            .timeout(Duration::from_secs(10))
++            .timeout(REQUEST_TIMEOUT)
++            .redirect(reqwest::redirect::Policy::none())
+             .build()
+             .unwrap_or_else(|_| Client::new());
+ 
+@@ -46,77 +50,108 @@
+         let service = WebhookService::new(self.db.clone());
+ 
+         // Fetch pending events (max 10 per run)
+-        let events = service.get_pending_events(10).await?;
+-
+-        for (event_id, webhook_id, event_type, payload_str) in events {
++        let events = service.get_pending_deliveries(10).await?;
++
++        for event in events {
++            let Some(token) = service.reserve_event(&event).await? else {
++                continue;
++            };
++
+             // Get webhook details
+-            let webhook = if let Some(w) = service.get_webhook(&webhook_id).await? {
++            let webhook = if let Some(w) = service.get_webhook(&event.webhook_id).await? {
+                 w
+             } else {
+                 // Webhook was deleted, mark event as failed
+-                let _ = service
+-                    .update_event_status(&event_id, "failed", Some("webhook_deleted"), 0)
+-                    .await;
++                service
++                    .finish_reserved_event(
++                        &event.id,
++                        &token,
++                        "failed",
++                        Some("webhook_deleted"),
++                        event.retries,
++                    )
++                    .await?;
+                 continue;
+             };
+ 
+             if !webhook.is_active {
+-                let _ = service
+-                    .update_event_status(&event_id, "failed", Some("webhook_inactive"), 0)
+-                    .await;
++                service
++                    .finish_reserved_event(
++                        &event.id,
++                        &token,
++                        "failed",
++                        Some("webhook_inactive"),
++                        event.retries,
++                    )
++                    .await?;
+                 continue;
+             }
+ 
++            let body = match event.delivery_body() {
++                Ok(body) => body,
++                Err(error) => {
++                    service
++                        .finish_reserved_event(
++                            &event.id,
++                            &token,
++                            "failed",
++                            Some(&format!("invalid_event_payload: {error}")),
++                            event.retries,
++                        )
++                        .await?;
++                    continue;
++                }
++            };
++            let body = service.persist_delivery_payload(&event.id, &body).await?;
++            if !service.owns_reservation(&event.id, &token).await? {
++                continue;
++            }
++
+             // Attempt delivery
+             match self
+-                .deliver_webhook(&webhook.url, &payload_str, &webhook.secret, &event_type)
++                .deliver_webhook(&webhook.url, &body, &webhook.secret)
+                 .await
+             {
+                 Ok(()) => {
+                     // Success
+-                    let _ = service
+-                        .update_event_status(&event_id, "delivered", None, 0)
+-                        .await;
+-
+-                    // Update webhook's last_fired_at
+-                    let _ = service.update_last_fired(&webhook_id).await;
++                    service
++                        .finish_reserved_event(&event.id, &token, "delivered", None, event.retries)
++                        .await?;
+ 
+                     tracing::info!(
+                         "Webhook delivered successfully: webhook_id={}, event={}",
+-                        webhook_id,
+-                        event_type
++                        event.webhook_id,
++                        event.event_type
+                     );
+                 }
+                 Err(e) => {
+-                    // Determine retry count from event
+-                    let current_retries = self.get_event_retries(&event_id).await.unwrap_or(0);
+-
+-                    if current_retries < 3 {
+-                        // Retry later
+-                        let _ = service
+-                            .update_event_status(
+-                                &event_id,
+-                                "pending",
+-                                Some(&e.to_string()),
+-                                current_retries + 1,
+-                            )
+-                            .await;
+-
++                    let failures = event.retries + 1;
++                    let status = if failures < MAX_WEBHOOK_ATTEMPTS {
++                        "pending"
++                    } else {
++                        "failed"
++                    };
++                    service
++                        .finish_reserved_event(
++                            &event.id,
++                            &token,
++                            status,
++                            Some(&e.to_string()),
++                            failures,
++                        )
++                        .await?;
++
++                    if status == "pending" {
+                         tracing::warn!(
+                             "Webhook delivery failed (will retry): webhook_id={}, error={}, retries={}",
+-                            webhook_id,
++                            event.webhook_id,
+                             e,
+-                            current_retries + 1
++                            failures
+                         );
+                     } else {
+-                        // Max retries exceeded
+-                        let _ = service
+-                            .update_event_status(&event_id, "failed", Some(&e.to_string()), 3)
+-                            .await;
+-
+                         tracing::error!(
+                             "Webhook delivery failed (max retries): webhook_id={}, error={}",
+-                            webhook_id,
++                            event.webhook_id,
+                             e
+                         );
+                     }
+@@ -128,74 +163,496 @@
+     }
+ 
+     /// Deliver webhook to URL
+-    async fn deliver_webhook(
+-        &self,
+-        url: &str,
+-        payload: &str,
+-        secret: &str,
+-        event_type: &str,
+-    ) -> Result<()> {
+-        let delivery_id = Uuid::new_v4().to_string();
+-        let timestamp = chrono::Utc::now().timestamp();
+-
+-        // Create envelope
+-        let envelope = WebhookEventEnvelope {
+-            id: delivery_id.clone(),
+-            event: event_type.to_string(),
+-            timestamp,
+-            data: serde_json::from_str(payload)?,
+-        };
+-
+-        let body = serde_json::to_string(&envelope)?;
+-        let signature = WebhookSignature::sign(&body, secret);
++    async fn deliver_webhook(&self, url: &str, body: &str, secret: &str) -> Result<()> {
++        // Headers and signature describe the exact envelope frozen in the DB.
++        let envelope: WebhookEventEnvelope = serde_json::from_str(body)?;
++        let signature = WebhookSignature::sign(body, secret);
+ 
+         tracing::debug!(
+             "Sending webhook to {}: delivery_id={}, signature={}...",
+             url,
+-            delivery_id,
++            envelope.id,
+             &signature[..20]
+         );
+ 
+         let response = self
+             .http_client
+             .post(url)
+-            .header("X-Zapier-Event", event_type)
++            .timeout(REQUEST_TIMEOUT)
++            .header("X-Zapier-Event", envelope.event)
+             .header("X-Zapier-Signature", signature)
+-            .header("X-Zapier-Timestamp", timestamp.to_string())
+-            .header("X-Zapier-Delivery-ID", delivery_id)
++            .header("X-Zapier-Timestamp", envelope.timestamp.to_string())
++            .header("X-Zapier-Delivery-ID", envelope.id)
+             .header("Content-Type", "application/json")
+-            .body(body)
++            .body(body.to_owned())
+             .send()
+             .await?;
+ 
+         if response.status().is_success() {
+             Ok(())
+         } else {
+-            anyhow::bail!(
+-                "Webhook failed with status {}: {}",
+-                response.status(),
+-                response.text().await.unwrap_or_default()
+-            )
+-        }
+-    }
+-
+-    /// Get current retry count for an event
+-    async fn get_event_retries(&self, event_id: &str) -> Result<i32> {
+-        let retries: Option<i64> =
+-            sqlx::query_scalar("SELECT retries FROM webhook_events WHERE id = ?")
+-                .bind(event_id)
+-                .fetch_optional(&self.db)
+-                .await?;
+-
+-        Ok(retries.unwrap_or(0) as i32)
++            anyhow::bail!("Webhook failed with status {}", response.status())
++        }
+     }
+ }
+ 
+ #[cfg(test)]
+ mod tests {
+-    #[test]
+-    fn test_webhook_dispatcher_creation() {
+-        // This is a smoke test for basic creation
+-        // Full tests would require mocking the database and HTTP client
++    use super::*;
++    use anyhow::Context;
++    use axum::{
++        extract::State,
++        http::{HeaderMap, StatusCode},
++        routing::post,
++        Router,
++    };
++    use serde_json::json;
++    use sqlx::sqlite::SqlitePoolOptions;
++    use std::sync::Arc;
++    use tokio::{net::TcpListener, sync::Mutex, task::JoinHandle};
++
++    use crate::webhooks::WebhookEventStatus;
++
++    const WEBHOOK_ID: &str = "webhook-1";
++    const SUBSCRIBER_SECRET: &str = "subscriber-secret";
++
++    #[derive(Clone)]
++    struct CapturedRequest {
++        headers: HeaderMap,
++        body: String,
++    }
++
++    struct ReceiverState {
++        statuses: Vec<StatusCode>,
++        requests: Mutex<Vec<CapturedRequest>>,
++        redirect_to: Option<String>,
++    }
++
++    struct TestReceiver {
++        url: String,
++        state: Arc<ReceiverState>,
++        task: JoinHandle<std::io::Result<()>>,
++    }
++
++    impl TestReceiver {
++        async fn start(statuses: Vec<StatusCode>) -> Result<Self> {
++            Self::start_with_redirect(statuses, None).await
++        }
++
++        async fn start_with_redirect(
++            statuses: Vec<StatusCode>,
++            redirect_to: Option<String>,
++        ) -> Result<Self> {
++            let listener = TcpListener::bind("127.0.0.1:0").await?;
++            let address = listener.local_addr()?;
++            let state = Arc::new(ReceiverState {
++                statuses,
++                requests: Mutex::new(Vec::new()),
++                redirect_to,
++            });
++            let app = Router::new()
++                .route("/webhook", post(capture_request))
++                .with_state(state.clone());
++            let task = tokio::spawn(async move { axum::serve(listener, app).await });
++
++            Ok(Self {
++                url: format!("http://{address}/webhook"),
++                state,
++                task,
++            })
++        }
++
++        async fn requests(&self) -> Vec<CapturedRequest> {
++            self.state.requests.lock().await.clone()
++        }
++    }
++
++    impl Drop for TestReceiver {
++        fn drop(&mut self) {
++            self.task.abort();
++        }
++    }
++
++    async fn capture_request(
++        State(state): State<Arc<ReceiverState>>,
++        headers: HeaderMap,
++        body: String,
++    ) -> (StatusCode, HeaderMap, &'static str) {
++        let mut requests = state.requests.lock().await;
++        let status = state
++            .statuses
++            .get(requests.len())
++            .copied()
++            .unwrap_or(StatusCode::SERVICE_UNAVAILABLE);
++        requests.push(CapturedRequest { headers, body });
++        let mut headers = HeaderMap::new();
++        if let Some(location) = &state.redirect_to {
++            headers.insert(axum::http::header::LOCATION, location.parse().unwrap());
++        }
++        (status, headers, "receiver response")
++    }
++
++    async fn dispatcher_db(url: &str, active: bool) -> Result<SqlitePool> {
++        let pool = SqlitePoolOptions::new()
++            .max_connections(1)
++            .connect("sqlite::memory:")
++            .await?;
++        sqlx::query("CREATE TABLE users (id TEXT PRIMARY KEY)")
++            .execute(&pool)
++            .await?;
++        sqlx::raw_sql(include_str!("../../migrations/019_oauth_webhooks.sql"))
++            .execute(&pool)
++            .await?;
++        sqlx::raw_sql(include_str!(
++            "../../migrations/035_webhook_delivery_retries.sql"
++        ))
++        .execute(&pool)
++        .await?;
++        sqlx::query("INSERT INTO users (id) VALUES ('owner')")
++            .execute(&pool)
++            .await?;
++        sqlx::query(
++            "INSERT INTO webhooks (id, user_id, url, event_types, secret, is_active)
++             VALUES (?, 'owner', ?, 'test', ?, ?)",
++        )
++        .bind(WEBHOOK_ID)
++        .bind(url)
++        .bind(SUBSCRIBER_SECRET)
++        .bind(active)
++        .execute(&pool)
++        .await?;
++
++        Ok(pool)
++    }
++
++    async fn queue_event(pool: &SqlitePool) -> Result<String> {
++        WebhookService::new(pool.clone())
++            .create_webhook_event(WEBHOOK_ID, "test", json!({"amount": 42}))
++            .await
++    }
++
++    async fn event_state(pool: &SqlitePool, event_id: &str) -> Result<WebhookEventStatus> {
++        Ok(sqlx::query_as::<_, WebhookEventStatus>(
++            "SELECT id, webhook_id, event_type, status, retries, last_error, created_at,
++                    next_attempt_at, last_attempt_at, delivered_at
++             FROM webhook_events WHERE id = ?",
++        )
++        .bind(event_id)
++        .fetch_one(pool)
++        .await?)
++    }
++
++    async fn make_due(pool: &SqlitePool, event_id: &str) -> Result<()> {
++        sqlx::query("UPDATE webhook_events SET next_attempt_at = 0 WHERE id = ?")
++            .bind(event_id)
++            .execute(pool)
++            .await?;
++        Ok(())
++    }
++
++    async fn last_fired_at(pool: &SqlitePool) -> Result<Option<String>> {
++        Ok(
++            sqlx::query_scalar("SELECT last_fired_at FROM webhooks WHERE id = ?")
++                .bind(WEBHOOK_ID)
++                .fetch_one(pool)
++                .await?,
++        )
++    }
++
++    #[tokio::test]
++    async fn retries_survive_dispatcher_restart_with_identical_signed_delivery() -> Result<()> {
++        let receiver =
++            TestReceiver::start(vec![StatusCode::INTERNAL_SERVER_ERROR, StatusCode::OK]).await?;
++        let pool = dispatcher_db(&receiver.url, true).await?;
++        let event_id = queue_event(&pool).await?;
++        let first_dispatcher = WebhookDispatcher::new(pool.clone());
++        let before = chrono::Utc::now().timestamp();
++
++        first_dispatcher.process_pending_events().await?;
++        let pending = event_state(&pool, &event_id).await?;
++        assert_eq!(pending.status, "pending");
++        assert_eq!(pending.retries, 1);
++        assert!(pending
++            .last_error
++            .as_deref()
++            .is_some_and(|e| e.contains("500")));
++        assert!(
++            pending
++                .next_attempt_at
++                .context("retry must have a due time")?
++                >= before + 5
++        );
++        assert!(pending.last_attempt_at.is_some());
++        assert_eq!(pending.delivered_at, None);
++        assert_eq!(last_fired_at(&pool).await?, None);
++        drop(first_dispatcher);
++
++        let restarted_dispatcher = WebhookDispatcher::new(pool.clone());
++        restarted_dispatcher.process_pending_events().await?;
++        assert_eq!(receiver.requests().await.len(), 1);
++        assert_eq!(event_state(&pool, &event_id).await?.retries, 1);
++
++        make_due(&pool, &event_id).await?;
++        restarted_dispatcher.process_pending_events().await?;
++
++        let delivered = event_state(&pool, &event_id).await?;
++        assert_eq!(delivered.status, "delivered");
++        assert_eq!(delivered.retries, 1);
++        assert_eq!(delivered.last_error, pending.last_error);
++        assert_eq!(delivered.next_attempt_at, None);
++        assert!(delivered.delivered_at.is_some());
++        assert!(last_fired_at(&pool).await?.is_some());
++
++        let requests = receiver.requests().await;
++        assert_eq!(requests.len(), 2);
++        let first = &requests[0];
++        let second = &requests[1];
++        assert_eq!(first.body, second.body);
++        for name in [
++            "X-Zapier-Event",
++            "X-Zapier-Signature",
++            "X-Zapier-Timestamp",
++            "X-Zapier-Delivery-ID",
++            "Content-Type",
++        ] {
++            assert_eq!(first.headers.get(name), second.headers.get(name));
++            assert!(first.headers.contains_key(name));
++        }
++
++        let envelope: WebhookEventEnvelope = serde_json::from_str(&first.body)?;
++        assert_eq!(envelope.id, event_id);
++        assert_eq!(envelope.event, "test");
++        assert_eq!(envelope.data, json!({"amount": 42}));
++        assert_eq!(
++            first
++                .headers
++                .get("X-Zapier-Delivery-ID")
++                .context("delivery ID header")?
++                .to_str()?,
++            event_id
++        );
++        assert_eq!(
++            first
++                .headers
++                .get("X-Zapier-Timestamp")
++                .context("timestamp header")?
++                .to_str()?,
++            envelope.timestamp.to_string()
++        );
++        let signature = first
++            .headers
++            .get("X-Zapier-Signature")
++            .context("signature header")?
++            .to_str()?;
++        assert!(WebhookSignature::verify(
++            &first.body,
++            SUBSCRIBER_SECRET,
++            signature
++        ));
++        assert!(!WebhookSignature::verify(
++            &format!("{} ", first.body),
++            SUBSCRIBER_SECRET,
++            signature
++        ));
++        assert!(!WebhookSignature::verify(
++            &first.body,
++            "different-subscriber-secret",
++            signature
++        ));
++        Ok(())
++    }
++
++    #[tokio::test]
++    async fn three_failed_attempts_become_terminal_without_a_fourth_request() -> Result<()> {
++        let receiver = TestReceiver::start(vec![StatusCode::SERVICE_UNAVAILABLE]).await?;
++        let pool = dispatcher_db(&receiver.url, true).await?;
++        let event_id = queue_event(&pool).await?;
++
++        for attempt in 1..=3 {
++            let dispatcher = WebhookDispatcher::new(pool.clone());
++            let before = chrono::Utc::now().timestamp();
++            dispatcher.process_pending_events().await?;
++
++            let state = event_state(&pool, &event_id).await?;
++            assert_eq!(state.retries, attempt);
++            assert!(state
++                .last_error
++                .as_deref()
++                .is_some_and(|e| e.contains("503")));
++            assert_eq!(state.delivered_at, None);
++            assert_eq!(receiver.requests().await.len(), attempt as usize);
++
++            if attempt < 3 {
++                assert_eq!(state.status, "pending");
++                let delay = if attempt == 1 { 5 } else { 10 };
++                assert!(state.next_attempt_at.context("retry due time")? >= before + delay);
++                dispatcher.process_pending_events().await?;
++                assert_eq!(receiver.requests().await.len(), attempt as usize);
++                make_due(&pool, &event_id).await?;
++            } else {
++                assert_eq!(state.status, "failed");
++                assert_eq!(state.next_attempt_at, None);
++            }
++        }
++
++        // Even an explicitly due timestamp cannot revive a terminal delivery.
++        make_due(&pool, &event_id).await?;
++        WebhookDispatcher::new(pool.clone())
++            .process_pending_events()
++            .await?;
++        assert_eq!(receiver.requests().await.len(), 3);
++        assert_eq!(event_state(&pool, &event_id).await?.status, "failed");
++        assert_eq!(last_fired_at(&pool).await?, None);
++        Ok(())
++    }
++
++    #[tokio::test]
++    async fn redirects_do_not_contact_another_receiver_or_store_response_bodies() -> Result<()> {
++        let destination = TestReceiver::start(vec![StatusCode::OK]).await?;
++        let redirect = TestReceiver::start_with_redirect(
++            vec![StatusCode::FOUND],
++            Some(destination.url.clone()),
++        )
++        .await?;
++        let pool = dispatcher_db(&redirect.url, true).await?;
++        let event_id = queue_event(&pool).await?;
++        WebhookDispatcher::new(pool.clone())
++            .process_pending_events()
++            .await?;
++        let state = event_state(&pool, &event_id).await?;
++        assert_eq!(state.status, "pending");
++        assert_eq!(state.retries, 1);
++        let error = state
++            .last_error
++            .context("redirect failure must be recorded")?;
++        assert!(error.contains("302"));
++        assert!(!error.contains("receiver response"));
++        assert_eq!(redirect.requests().await.len(), 1);
++        assert!(destination.requests().await.is_empty());
++        Ok(())
++    }
++
++    #[tokio::test]
++    async fn persistence_errors_propagate_and_roll_back_delivery_state() -> Result<()> {
++        for (trigger, expected_error) in [
++            (
++                "CREATE TRIGGER reject_delivered BEFORE UPDATE OF status ON webhook_events
++                 WHEN NEW.status = 'delivered'
++                 BEGIN SELECT RAISE(ABORT, 'reject delivered'); END;",
++                "reject delivered",
++            ),
++            (
++                "CREATE TRIGGER reject_last_fired BEFORE UPDATE OF last_fired_at ON webhooks
++                 BEGIN SELECT RAISE(ABORT, 'reject last_fired_at'); END;",
++                "reject last_fired_at",
++            ),
++        ] {
++            let receiver = TestReceiver::start(vec![StatusCode::OK]).await?;
++            let pool = dispatcher_db(&receiver.url, true).await?;
++            let event_id = queue_event(&pool).await?;
++            sqlx::raw_sql(trigger).execute(&pool).await?;
++            let before = chrono::Utc::now().timestamp();
++
++            let error = WebhookDispatcher::new(pool.clone())
++                .process_pending_events()
++                .await
++                .err()
++                .context("injected persistence failure must propagate")?;
++            assert!(error.to_string().contains(expected_error));
++
++            let state = event_state(&pool, &event_id).await?;
++            assert_eq!(state.status, "pending");
++            assert_eq!(state.retries, 0);
++            assert_eq!(state.last_error, None);
++            assert_eq!(state.delivered_at, None);
++            assert!(state.last_attempt_at.is_some());
++            assert!(state.next_attempt_at.context("reservation must remain")? >= before + 30);
++            assert_eq!(last_fired_at(&pool).await?, None);
++            assert_eq!(receiver.requests().await.len(), 1);
++
++            WebhookDispatcher::new(pool.clone())
++                .process_pending_events()
++                .await?;
++            assert_eq!(receiver.requests().await.len(), 1);
++        }
++        Ok(())
++    }
++
++    #[tokio::test]
++    async fn inactive_webhook_does_not_send_or_reset_failure_count() -> Result<()> {
++        let receiver = TestReceiver::start(vec![StatusCode::OK]).await?;
++        let pool = dispatcher_db(&receiver.url, false).await?;
++        let event_id = queue_event(&pool).await?;
++        sqlx::query(
++            "UPDATE webhook_events SET retries = 2, last_error = 'previous failure' WHERE id = ?",
++        )
++        .bind(&event_id)
++        .execute(&pool)
++        .await?;
++
++        WebhookDispatcher::new(pool.clone())
++            .process_pending_events()
++            .await?;
++
++        let state = event_state(&pool, &event_id).await?;
++        assert_eq!(state.status, "failed");
++        assert_eq!(state.retries, 2);
++        assert_eq!(state.last_error.as_deref(), Some("webhook_inactive"));
++        assert_eq!(state.next_attempt_at, None);
++        assert_eq!(state.delivered_at, None);
++        assert_eq!(last_fired_at(&pool).await?, None);
++        assert!(receiver.requests().await.is_empty());
++        Ok(())
++    }
++
++    #[tokio::test]
++    async fn legacy_sqlite_timestamp_is_frozen_before_retry() -> Result<()> {
++        let receiver =
++            TestReceiver::start(vec![StatusCode::INTERNAL_SERVER_ERROR, StatusCode::OK]).await?;
++        let pool = dispatcher_db(&receiver.url, true).await?;
++        let event_id = "legacy-event";
++        sqlx::query(
++            "INSERT INTO webhook_events
++                 (id, webhook_id, event_type, payload, status, retries, created_at)
++             VALUES (?, ?, 'test', '{\"legacy\":true}', 'pending', 0, '2023-11-14 22:13:20')",
++        )
++        .bind(event_id)
++        .bind(WEBHOOK_ID)
++        .execute(&pool)
++        .await?;
++
++        WebhookDispatcher::new(pool.clone())
++            .process_pending_events()
++            .await?;
++        let first = receiver.requests().await;
++        assert_eq!(first.len(), 1);
++        let envelope: WebhookEventEnvelope = serde_json::from_str(&first[0].body)?;
++        assert_eq!(envelope.id, event_id);
++        assert_eq!(envelope.timestamp, 1_700_000_000);
++        assert_eq!(envelope.data, json!({"legacy": true}));
++        let frozen_body: Option<String> =
++            sqlx::query_scalar("SELECT delivery_payload FROM webhook_events WHERE id = ?")
++                .bind(event_id)
++                .fetch_one(&pool)
++                .await?;
++        assert_eq!(frozen_body.as_deref(), Some(first[0].body.as_str()));
++
++        // Retries use the frozen body even if the original row is later edited.
++        sqlx::query(
++            "UPDATE webhook_events SET payload = '{\"legacy\":false}',
++                 created_at = '2030-01-01 00:00:00', next_attempt_at = 0 WHERE id = ?",
++        )
++        .bind(event_id)
++        .execute(&pool)
++        .await?;
++        WebhookDispatcher::new(pool.clone())
++            .process_pending_events()
++            .await?;
++
++        let requests = receiver.requests().await;
++        assert_eq!(requests.len(), 2);
++        assert_eq!(requests[0].body, requests[1].body);
++        assert_eq!(event_state(&pool, event_id).await?.status, "delivered");
++        Ok(())
+     }
+ }
+diff --git a/src/services/webhook_event_service.rs b/src/services/webhook_event_service.rs
+index 6355fb10585cc54cbbcada77714dae15be91e172..d0ff11e7932d073698e6c78a2c115820452badf0 100644
+--- a/src/services/webhook_event_service.rs
++++ b/src/services/webhook_event_service.rs
+@@ -140,10 +140,9 @@
+             }
+ 
+             // Create webhook event for delivery
+-            let _ = self
+-                .webhook_service
++            self.webhook_service
+                 .create_webhook_event(&webhook.id, event_type_str, payload.clone())
+-                .await;
++                .await?;
+ 
+             tracing::info!(
+                 "Webhook event triggered: webhook_id={}, event_type={}",
+diff --git a/src/webhooks/mod.rs b/src/webhooks/mod.rs
+index f3cc3d7216050e31ecd826aa986f61454579604c..30cec2c83576dcef98a6cb12eeb9d13f3b651117 100644
+--- a/src/webhooks/mod.rs
++++ b/src/webhooks/mod.rs
+@@ -12,6 +12,20 @@
+ type HmacSha256 = Hmac<Sha256>;
+ 
+ pub use channel::{WebhookChannel, WebhookEndpoint};
++
++/// Maximum failed delivery attempts, including the initial attempt.
++pub const MAX_WEBHOOK_ATTEMPTS: i32 = 3;
++const RETRY_BASE_SECONDS: i64 = 5;
++const RETRY_MAX_SECONDS: i64 = 300;
++// Longer than the dispatcher's per-request timeout. A failed status write or
++// worker restart must not immediately send the same event again.
++const DELIVERY_RESERVATION_SECONDS: i64 = 30;
++
++fn retry_delay_seconds(failures: i32) -> i64 {
++    RETRY_BASE_SECONDS
++        .saturating_mul(2_i64.saturating_pow(failures.saturating_sub(1).max(0) as u32))
++        .min(RETRY_MAX_SECONDS)
++}
+ 
+ /// Webhook signature - for verifying webhook requests
+ pub struct WebhookSignature;
+@@ -70,6 +84,14 @@
+     pub created_at: String,
+ }
+ 
++/// Returned once at registration so the subscriber can verify deliveries.
++#[derive(Debug, Serialize)]
++pub struct WebhookRegistrationResponse {
++    #[serde(flatten)]
++    pub webhook: WebhookResponse,
++    pub secret: String,
++}
++
+ /// Webhook event envelope
+ #[derive(Debug, Serialize, Deserialize)]
+ pub struct WebhookEventEnvelope {
+@@ -77,6 +99,57 @@
+     pub event: String,
+     pub timestamp: i64,
+     pub data: serde_json::Value,
++}
++
++/// Persisted delivery state; subscriber secrets and event data are not exposed.
++#[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
++pub struct WebhookEventStatus {
++    pub id: String,
++    pub webhook_id: String,
++    pub event_type: String,
++    pub status: String,
++    /// Number of failed attempts, retained after eventual success.
++    pub retries: i32,
++    pub last_error: Option<String>,
++    pub created_at: String,
++    pub next_attempt_at: Option<i64>,
++    pub last_attempt_at: Option<i64>,
++    pub delivered_at: Option<i64>,
++}
++
++#[derive(Debug, sqlx::FromRow)]
++pub(crate) struct PendingWebhookEvent {
++    pub id: String,
++    pub webhook_id: String,
++    pub event_type: String,
++    pub payload: String,
++    pub retries: i32,
++    pub created_at: String,
++    pub delivery_payload: Option<String>,
++}
++
++impl PendingWebhookEvent {
++    /// Older events have no stored envelope yet. Derive it from immutable
++    /// database fields, accepting both service and SQLite timestamp formats.
++    pub(crate) fn delivery_body(&self) -> anyhow::Result<String> {
++        if let Some(body) = &self.delivery_payload {
++            return Ok(body.clone());
++        }
++
++        let timestamp = chrono::DateTime::parse_from_rfc3339(&self.created_at)
++            .map(|time| time.timestamp())
++            .or_else(|_| {
++                chrono::NaiveDateTime::parse_from_str(&self.created_at, "%Y-%m-%d %H:%M:%S%.f")
++                    .map(|time| time.and_utc().timestamp())
++            })?;
++
++        Ok(serde_json::to_string(&WebhookEventEnvelope {
++            id: self.id.clone(),
++            event: self.event_type.clone(),
++            timestamp,
++            data: serde_json::from_str(&self.payload)?,
++        })?)
++    }
+ }
+ 
+ /// Event types that can trigger webhooks
+@@ -132,6 +205,18 @@
+         user_id: &str,
+         request: CreateWebhookRequest,
+     ) -> anyhow::Result<WebhookResponse> {
++        Ok(self
++            .register_webhook_with_secret(user_id, request)
++            .await?
++            .webhook)
++    }
++
++    /// Register a webhook and return its signing secret to its creator once.
++    pub async fn register_webhook_with_secret(
++        &self,
++        user_id: &str,
++        request: CreateWebhookRequest,
++    ) -> anyhow::Result<WebhookRegistrationResponse> {
+         let id = Uuid::new_v4().to_string();
+         let secret = Uuid::new_v4().to_string();
+         let event_types_str = request.event_types.join(",");
+@@ -161,13 +246,16 @@
+         .execute(&self.db)
+         .await?;
+ 
+-        Ok(WebhookResponse {
+-            id,
+-            url: request.url,
+-            event_types: request.event_types,
+-            filters: request.filters,
+-            is_active: true,
+-            created_at: now,
++        Ok(WebhookRegistrationResponse {
++            webhook: WebhookResponse {
++                id,
++                url: request.url,
++                event_types: request.event_types,
++                filters: request.filters,
++                is_active: true,
++                created_at: now,
++            },
++            secret,
+         })
+     }
+ 
+@@ -225,11 +313,17 @@
+     ) -> anyhow::Result<String> {
+         let id = Uuid::new_v4().to_string();
+         let payload_str = payload.to_string();
+-        let now = chrono::Utc::now().to_rfc3339();
++        let now = chrono::Utc::now();
++        let delivery_payload = serde_json::to_string(&WebhookEventEnvelope {
++            id: id.clone(),
++            event: event_type.to_string(),
++            timestamp: now.timestamp(),
++            data: payload,
++        })?;
+ 
+         sqlx::query(
+-            "INSERT INTO webhook_events (id, webhook_id, event_type, payload, status, retries, created_at)
+-             VALUES (?, ?, ?, ?, ?, ?, ?)"
++            "INSERT INTO webhook_events (id, webhook_id, event_type, payload, status, retries, created_at, delivery_payload)
++             VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+         )
+         .bind(id.clone())
+         .bind(webhook_id)
+@@ -237,48 +331,132 @@
+         .bind(payload_str)
+         .bind("pending")
+         .bind(0)
++        .bind(now.to_rfc3339())
++        .bind(delivery_payload)
++        .execute(&self.db)
++        .await?;
++
++        Ok(id)
++    }
++
++    /// Get pending events whose persisted retry time has arrived.
++    pub async fn get_pending_events(
++        &self,
++        limit: usize,
++    ) -> anyhow::Result<Vec<(String, String, String, String)>> {
++        Ok(self
++            .get_pending_deliveries(limit)
++            .await?
++            .into_iter()
++            .map(|event| (event.id, event.webhook_id, event.event_type, event.payload))
++            .collect())
++    }
++
++    pub(crate) async fn get_pending_deliveries(
++        &self,
++        limit: usize,
++    ) -> anyhow::Result<Vec<PendingWebhookEvent>> {
++        let query_limit = i64::try_from(limit)?;
++
++        Ok(sqlx::query_as::<_, PendingWebhookEvent>(
++            "SELECT we.id, we.webhook_id, we.event_type, we.payload,
++                    we.retries, we.created_at, we.delivery_payload
++             FROM webhook_events we
++             WHERE we.status = 'pending' AND we.retries < ?
++               AND (we.next_attempt_at IS NULL OR we.next_attempt_at <= ?)
++             ORDER BY we.created_at ASC, we.id ASC
++             LIMIT ?",
++        )
++        .bind(MAX_WEBHOOK_ATTEMPTS)
++        .bind(chrono::Utc::now().timestamp())
++        .bind(query_limit)
++        .fetch_all(&self.db)
++        .await?)
++    }
++
++    /// Atomically reserve a due event before making an HTTP request. Competing
++    /// dispatchers that selected the same row cannot both start delivery.
++    pub(crate) async fn reserve_event(
++        &self,
++        event: &PendingWebhookEvent,
++    ) -> anyhow::Result<Option<String>> {
++        let now = chrono::Utc::now().timestamp();
++        let token = Uuid::new_v4().to_string();
++        let result = sqlx::query(
++            "UPDATE webhook_events SET next_attempt_at = ?, last_attempt_at = ?, delivery_token = ?
++             WHERE id = ? AND status = 'pending' AND retries = ? AND retries < ?
++               AND (next_attempt_at IS NULL OR next_attempt_at <= ?)",
++        )
++        .bind(now + DELIVERY_RESERVATION_SECONDS)
++        .bind(now)
++        .bind(&token)
++        .bind(&event.id)
++        .bind(event.retries)
++        .bind(MAX_WEBHOOK_ATTEMPTS)
+         .bind(now)
+         .execute(&self.db)
+         .await?;
+ 
+-        Ok(id)
+-    }
+-
+-    /// Get pending webhook events
+-    pub async fn get_pending_events(
+-        &self,
+-        limit: usize,
+-    ) -> anyhow::Result<Vec<(String, String, String, String)>> {
+-        let query_limit = limit as i64;
+-
+-        let rows = sqlx::query(
+-            "SELECT we.id, we.webhook_id, we.event_type, we.payload
+-             FROM webhook_events we
+-             WHERE we.status = 'pending' AND we.retries < 3
+-             ORDER BY we.created_at ASC
+-             LIMIT ?",
+-        )
+-        .bind(query_limit)
+-        .fetch_all(&self.db)
+-        .await?;
+-
+-        let events: Vec<(String, String, String, String)> = rows
+-            .into_iter()
+-            .map(|row| {
+-                use sqlx::Row;
+-                (
+-                    row.get::<String, _>(0),
+-                    row.get::<String, _>(1),
+-                    row.get::<String, _>(2),
+-                    row.get::<String, _>(3),
+-                )
+-            })
+-            .collect();
+-
+-        Ok(events)
+-    }
+-
+-    /// Update webhook event status
++        Ok((result.rows_affected() == 1).then_some(token))
++    }
++
++    /// Check ownership again after preparing the request, before contacting
++    /// the subscriber. A paused worker must not send under an expired claim.
++    pub(crate) async fn owns_reservation(
++        &self,
++        event_id: &str,
++        token: &str,
++    ) -> anyhow::Result<bool> {
++        Ok(sqlx::query_scalar(
++            "SELECT EXISTS(SELECT 1 FROM webhook_events
++             WHERE id = ? AND status = 'pending' AND delivery_token = ? AND next_attempt_at > ?)",
++        )
++        .bind(event_id)
++        .bind(token)
++        .bind(chrono::Utc::now().timestamp())
++        .fetch_one(&self.db)
++        .await?)
++    }
++
++    /// Freeze legacy envelopes before sending; never overwrite a stored body.
++    pub(crate) async fn persist_delivery_payload(
++        &self,
++        event_id: &str,
++        body: &str,
++    ) -> anyhow::Result<String> {
++        Ok(sqlx::query_scalar(
++            "UPDATE webhook_events SET delivery_payload = COALESCE(delivery_payload, ?)
++             WHERE id = ? RETURNING delivery_payload",
++        )
++        .bind(body)
++        .bind(event_id)
++        .fetch_one(&self.db)
++        .await?)
++    }
++
++    /// Query a delivery only when its webhook belongs to the authenticated user.
++    pub async fn get_event_status(
++        &self,
++        webhook_id: &str,
++        event_id: &str,
++        user_id: &str,
++    ) -> anyhow::Result<Option<WebhookEventStatus>> {
++        Ok(sqlx::query_as::<_, WebhookEventStatus>(
++            "SELECT we.id, we.webhook_id, we.event_type, we.status, we.retries,
++                    we.last_error, we.created_at, we.next_attempt_at,
++                    we.last_attempt_at, we.delivered_at
++             FROM webhook_events we JOIN webhooks w ON w.id = we.webhook_id
++             WHERE we.id = ? AND we.webhook_id = ? AND w.user_id = ?",
++        )
++        .bind(event_id)
++        .bind(webhook_id)
++        .bind(user_id)
++        .fetch_optional(&self.db)
++        .await?)
++    }
++
++    /// Persist the outcome and next due time. A success retains earlier failure
++    /// information and updates last_fired_at in the same transaction.
+     pub async fn update_event_status(
+         &self,
+         event_id: &str,
+@@ -286,16 +464,74 @@
+         error: Option<&str>,
+         retries: i32,
+     ) -> anyhow::Result<()> {
+-        sqlx::query(
+-            "UPDATE webhook_events SET status = ?, last_error = ?, retries = ? WHERE id = ?",
++        self.set_event_status(event_id, status, error, retries, None)
++            .await
++    }
++
++    pub(crate) async fn finish_reserved_event(
++        &self,
++        event_id: &str,
++        token: &str,
++        status: &str,
++        error: Option<&str>,
++        retries: i32,
++    ) -> anyhow::Result<()> {
++        self.set_event_status(event_id, status, error, retries, Some(token))
++            .await
++    }
++
++    async fn set_event_status(
++        &self,
++        event_id: &str,
++        status: &str,
++        error: Option<&str>,
++        retries: i32,
++        token: Option<&str>,
++    ) -> anyhow::Result<()> {
++        anyhow::ensure!(retries >= 0, "Invalid webhook retry count");
++        anyhow::ensure!(
++            matches!(status, "pending" | "delivered" | "failed"),
++            "Invalid webhook event status"
++        );
++        let status = if status == "pending" && retries >= MAX_WEBHOOK_ATTEMPTS {
++            "failed"
++        } else {
++            status
++        };
++        let now = chrono::Utc::now();
++        let next_attempt_at =
++            (status == "pending").then(|| now.timestamp() + retry_delay_seconds(retries));
++        let delivered_at = (status == "delivered").then(|| now.timestamp());
++        let mut transaction = self.db.begin().await?;
++        let webhook_id: String = sqlx::query_scalar(
++            "UPDATE webhook_events
++             SET status = ?, last_error = COALESCE(?, last_error), retries = ?,
++                 next_attempt_at = ?, delivered_at = ?, delivery_token = NULL
++             WHERE id = ? AND status = 'pending'
++               AND (delivery_token = ? OR (? IS NULL AND delivery_token IS NULL))
++             RETURNING webhook_id",
+         )
+         .bind(status)
+         .bind(error)
+         .bind(retries)
++        .bind(next_attempt_at)
++        .bind(delivered_at)
+         .bind(event_id)
+-        .execute(&self.db)
++        .bind(token)
++        .bind(token)
++        .fetch_one(&mut *transaction)
+         .await?;
+ 
++        if status == "delivered" {
++            let result = sqlx::query("UPDATE webhooks SET last_fired_at = ? WHERE id = ?")
++                .bind(now.to_rfc3339())
++                .bind(webhook_id)
++                .execute(&mut *transaction)
++                .await?;
++            anyhow::ensure!(result.rows_affected() == 1, "Webhook no longer exists");
++        }
++
++        transaction.commit().await?;
+         Ok(())
+     }
+ 
+@@ -316,6 +552,210 @@
+ mod tests {
+     use super::*;
+ 
++    async fn legacy_database() -> SqlitePool {
++        let db = sqlx::sqlite::SqlitePoolOptions::new()
++            .max_connections(1)
++            .connect("sqlite::memory:")
++            .await
++            .unwrap();
++        sqlx::raw_sql("CREATE TABLE users (id TEXT PRIMARY KEY);")
++            .execute(&db)
++            .await
++            .unwrap();
++        sqlx::raw_sql(include_str!("../../migrations/019_oauth_webhooks.sql"))
++            .execute(&db)
++            .await
++            .unwrap();
++        sqlx::raw_sql(
++            "INSERT INTO users (id) VALUES ('owner');
++             INSERT INTO webhooks (id, user_id, url, event_types, secret)
++             VALUES ('webhook', 'owner', 'http://localhost/', 'test', 'subscriber-secret');",
++        )
++        .execute(&db)
++        .await
++        .unwrap();
++        db
++    }
++
++    #[test]
++    fn retry_delay_is_exponential_and_saturates() {
++        assert_eq!(
++            (1..=8).map(retry_delay_seconds).collect::<Vec<_>>(),
++            vec![5, 10, 20, 40, 80, 160, 300, 300]
++        );
++        assert_eq!(retry_delay_seconds(i32::MAX), 300);
++    }
++
++    #[tokio::test]
++    async fn migration_closes_exhausted_events_without_losing_errors() {
++        let db = legacy_database().await;
++        sqlx::raw_sql(
++            "INSERT INTO webhook_events (id, webhook_id, event_type, payload, status, retries, last_error)
++             VALUES ('exhausted', 'webhook', 'test', '{}', 'pending', 3, 'original failure'),
++                    ('delivered', 'webhook', 'test', '{}', 'delivered', 2, 'prior failure'),
++                    ('ready', 'webhook', 'test', '{}', 'pending', 1, 'retryable failure');",
++        )
++        .execute(&db)
++        .await
++        .unwrap();
++        sqlx::raw_sql(include_str!(
++            "../../migrations/035_webhook_delivery_retries.sql"
++        ))
++        .execute(&db)
++        .await
++        .unwrap();
++
++        let service = WebhookService::new(db);
++        let exhausted = service
++            .get_event_status("webhook", "exhausted", "owner")
++            .await
++            .unwrap()
++            .unwrap();
++        assert_eq!(exhausted.status, "failed");
++        assert_eq!(exhausted.retries, 3);
++        assert_eq!(exhausted.last_error.as_deref(), Some("original failure"));
++        let delivered = service
++            .get_event_status("webhook", "delivered", "owner")
++            .await
++            .unwrap()
++            .unwrap();
++        assert_eq!(delivered.status, "delivered");
++        assert_eq!(delivered.retries, 2);
++        assert_eq!(delivered.last_error.as_deref(), Some("prior failure"));
++        let pending = service.get_pending_events(10).await.unwrap();
++        assert_eq!(pending.len(), 1);
++        assert_eq!(pending[0].0, "ready");
++    }
++
++    #[tokio::test]
++    async fn stale_workers_cannot_reserve_the_same_due_event() {
++        let db = legacy_database().await;
++        sqlx::raw_sql(include_str!(
++            "../../migrations/035_webhook_delivery_retries.sql"
++        ))
++        .execute(&db)
++        .await
++        .unwrap();
++        let service = WebhookService::new(db.clone());
++        let event_id = service
++            .create_webhook_event("webhook", "test", serde_json::json!({"value": 1}))
++            .await
++            .unwrap();
++        let first_view = service.get_pending_deliveries(10).await.unwrap();
++        let second_view = service.get_pending_deliveries(10).await.unwrap();
++        let (first, second) = tokio::join!(
++            service.reserve_event(&first_view[0]),
++            service.reserve_event(&second_view[0])
++        );
++        assert_ne!(first.unwrap().is_some(), second.unwrap().is_some());
++        assert!(service.get_pending_events(10).await.unwrap().is_empty());
++
++        // A crashed worker's reservation expires without discarding the event.
++        sqlx::query("UPDATE webhook_events SET next_attempt_at = 0 WHERE id = ?")
++            .bind(&event_id)
++            .execute(&db)
++            .await
++            .unwrap();
++        let recovered = service.get_pending_deliveries(10).await.unwrap();
++        assert_eq!(recovered[0].id, event_id);
++        assert_eq!(
++            recovered[0].delivery_payload,
++            first_view[0].delivery_payload
++        );
++        assert!(service
++            .reserve_event(&recovered[0])
++            .await
++            .unwrap()
++            .is_some());
++    }
++
++    #[tokio::test]
++    async fn expired_workers_cannot_overwrite_a_new_delivery_outcome() {
++        let db = legacy_database().await;
++        sqlx::raw_sql(include_str!(
++            "../../migrations/035_webhook_delivery_retries.sql"
++        ))
++        .execute(&db)
++        .await
++        .unwrap();
++        let service = WebhookService::new(db.clone());
++        let event_id = service
++            .create_webhook_event("webhook", "test", serde_json::json!({}))
++            .await
++            .unwrap();
++        let event = service.get_pending_deliveries(1).await.unwrap();
++        let old_token = service.reserve_event(&event[0]).await.unwrap().unwrap();
++        sqlx::query("UPDATE webhook_events SET next_attempt_at = 0 WHERE id = ?")
++            .bind(&event_id)
++            .execute(&db)
++            .await
++            .unwrap();
++        assert!(!service
++            .owns_reservation(&event_id, &old_token)
++            .await
++            .unwrap());
++        let new_token = service.reserve_event(&event[0]).await.unwrap().unwrap();
++        assert_ne!(old_token, new_token);
++        service
++            .finish_reserved_event(&event_id, &new_token, "pending", Some("new failure"), 1)
++            .await
++            .unwrap();
++        let current = service
++            .get_event_status("webhook", &event_id, "owner")
++            .await
++            .unwrap()
++            .unwrap();
++        assert!(service
++            .finish_reserved_event(&event_id, &old_token, "pending", Some("stale failure"), 1)
++            .await
++            .is_err());
++        let after = service
++            .get_event_status("webhook", &event_id, "owner")
++            .await
++            .unwrap()
++            .unwrap();
++        assert_eq!(after.last_error, current.last_error);
++        assert_eq!(after.retries, current.retries);
++        assert_eq!(after.next_attempt_at, current.next_attempt_at);
++    }
++
++    #[tokio::test]
++    async fn terminal_events_are_not_resurrected_by_status_updates() {
++        let db = legacy_database().await;
++        sqlx::raw_sql(include_str!(
++            "../../migrations/035_webhook_delivery_retries.sql"
++        ))
++        .execute(&db)
++        .await
++        .unwrap();
++        let service = WebhookService::new(db);
++        let event_id = service
++            .create_webhook_event("webhook", "test", serde_json::json!({}))
++            .await
++            .unwrap();
++        service
++            .update_event_status(&event_id, "pending", Some("last failure"), 3)
++            .await
++            .unwrap();
++        assert!(service
++            .update_event_status(&event_id, "pending", None, 0)
++            .await
++            .is_err());
++        assert!(service
++            .update_event_status("missing", "delivered", None, 0)
++            .await
++            .is_err());
++        let state = service
++            .get_event_status("webhook", &event_id, "owner")
++            .await
++            .unwrap()
++            .unwrap();
++        assert_eq!(state.status, "failed");
++        assert_eq!(state.retries, 3);
++        assert_eq!(state.last_error.as_deref(), Some("last failure"));
++        assert!(state.next_attempt_at.is_none());
++    }
++
+     #[test]
+     fn test_webhook_signature() {
+         let payload = r#"{"event":"test"}"#;
+@@ -323,6 +763,15 @@
+ 
+         let signature = WebhookSignature::sign(payload, secret);
+         assert!(WebhookSignature::verify(payload, secret, &signature));
++    }
++
++    #[test]
++    fn webhook_signature_matches_hmac_sha256_test_vector() {
++        // RFC 4231, test case 1.
++        assert_eq!(
++            WebhookSignature::sign("Hi There", &"\x0b".repeat(20)),
++            "sha256=b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7"
++        );
+     }
+ 
+     #[test]
+diff --git a/tests/webhook_delivery_regression_tests.rs b/tests/webhook_delivery_regression_tests.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..a471b31a52239d2f9aee22c1ec4fde605d9ad9c7
+--- /dev/null
++++ b/tests/webhook_delivery_regression_tests.rs
+@@ -0,0 +1,14 @@
++// Compile the production webhook modules as one integration target so their
++// private dispatcher/database tests can run independently of unrelated lib
++// unit tests. Authentication, validation, encryption and broadcast types come
++// from the actual backend library; no alternate delivery implementation is used.
++pub use stellar_analysis_backend::{auth, auth_middleware, broadcast, crypto, validation};
++
++#[path = "../src/api/webhooks.rs"]
++pub mod webhook_api;
++#[path = "../src/services/webhook_dispatcher.rs"]
++pub mod webhook_dispatcher;
++#[path = "../src/services/webhook_event_service.rs"]
++pub mod webhook_event_service;
++#[path = "../src/webhooks/mod.rs"]
++pub mod webhooks;
+diff --git a/tests/webhook_event_service_tests.rs b/tests/webhook_event_service_tests.rs
+index 2f5e53dabcd3d81b982c58533005e53f36768105..1a0b666dc8f9f7d60c6c4d12e594b61362dd0232 100644
+--- a/tests/webhook_event_service_tests.rs
++++ b/tests/webhook_event_service_tests.rs
+@@ -47,6 +47,13 @@
+         .await
+         .unwrap();
+ 
++        sqlx::raw_sql(include_str!(
++            "../migrations/035_webhook_delivery_retries.sql"
++        ))
++        .execute(&pool)
++        .await
++        .unwrap();
++
+         pool
+     }
+ 
+@@ -99,6 +106,40 @@
+         assert_eq!(events.len(), 1);
+         assert_eq!(events[0].1, webhook_id);
+         assert_eq!(events[0].2, "anchor.status_changed");
++    }
++
++    #[tokio::test]
++    async fn test_event_enqueue_failure_is_not_reported_as_success() {
++        let pool = setup_test_db().await;
++        sqlx::raw_sql(
++            "INSERT INTO webhooks (id, user_id, url, event_types, secret)
++             VALUES ('webhook', 'owner', 'https://example.com/webhook', 'payment.created', 'secret');
++             CREATE TRIGGER reject_event BEFORE INSERT ON webhook_events
++             BEGIN SELECT RAISE(ABORT, 'event enqueue rejected'); END;",
++        )
++        .execute(&pool)
++        .await
++        .unwrap();
++        let result = WebhookEventService::new(pool.clone())
++            .trigger_payment_created(
++                "payment",
++                "source",
++                "destination",
++                "XLM",
++                "native",
++                42.0,
++                "2026-01-01T00:00:00Z",
++            )
++            .await;
++        assert!(result
++            .unwrap_err()
++            .to_string()
++            .contains("event enqueue rejected"));
++        let events: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM webhook_events")
++            .fetch_one(&pool)
++            .await
++            .unwrap();
++        assert_eq!(events, 0);
+     }
+ 
+     #[tokio::test]

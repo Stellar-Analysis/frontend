@@ -13,6 +13,8 @@ env:
 jobs:
   test-with-approle:
     runs-on: ubuntu-latest
+    env:
+      VAULT_AUTH_CONFIGURED: ${{ secrets.VAULT_ADDR != '' && secrets.VAULT_ROLE_ID != '' && secrets.VAULT_SECRET_ID != '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -23,12 +25,12 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Set fallback JWT secret when Vault credentials are unavailable
-        if: ${{ secrets.VAULT_ADDR == '' || secrets.VAULT_ROLE_ID == '' || secrets.VAULT_SECRET_ID == '' }}
+        if: ${{ env.VAULT_AUTH_CONFIGURED != 'true' }}
         run: |
           echo "JWT_SECRET=fallback-test-secret-value-at-least-32-characters" >> $GITHUB_ENV
 
       - name: Authenticate to Vault with AppRole
-        if: ${{ secrets.VAULT_ADDR != '' && secrets.VAULT_ROLE_ID != '' && secrets.VAULT_SECRET_ID != '' }}
+        if: ${{ env.VAULT_AUTH_CONFIGURED == 'true' }}
         id: vault-auth
         run: |
           TOKEN=$(curl -s -X POST \
