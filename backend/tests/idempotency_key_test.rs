@@ -195,3 +195,85 @@ fn failed_subscriber_does_not_replace_another_subscribers_success() {
     assert_eq!(outcomes[1].subscriber_id, "sub_b");
     assert!(deliverer.store.by_event_id(Uuid::new_v4()).is_empty());
 }
+
+#[test]
+fn backoff_preserves_fractional_delays_and_observed_waits() {
+    let clock = Arc::new(Mutex::new(Duration::ZERO));
+    let call_times = Arc::new(Mutex::new(Vec::new()));
+    let transport = RecordingTransport {
+        responses: vec![Ok(503), Ok(503), Ok(503), Ok(204)],
+        clock: Arc::clone(&clock),
+        call_times: Arc::clone(&call_times),
+        ..RecordingTransport::default()
+    };
+    let policy = DeliveryPolicy {
+        max_attempts: 4,
+        initial_backoff: Duration::from_micros(250),
+        max_backoff: Duration::from_micros(750),
+    };
+    let mut deliverer =
+        WebhookDeliverer::with_sleeper(transport, policy, RecordingSleeper { clock });
+    let event = WebhookEvent::new(
+        WebhookEventKind::SnapshotCompleted,
+        serde_json::json!({"snapshot": "fractional-backoff"}),
+    );
+    let record = deliverer
+        .deliver("sub_1", "https://example.test/hook", b"secret", &event)
+        .unwrap();
+
+    assert_eq!(record.attempts, 4);
+    assert_eq!(
+        *call_times.lock().unwrap(),
+        vec![
+            Duration::ZERO,
+            Duration::from_micros(250),
+            Duration::from_micros(750),
+            Duration::from_micros(1500),
+        ]
+    );
+}
+
+#[test]
+fn backoff_scales_to_the_cap_without_exponent_or_duration_overflow() {
+    let policy = DeliveryPolicy {
+        max_attempts: 25,
+        initial_backoff: Duration::from_millis(1),
+        max_backoff: Duration::from_secs(300),
+    };
+    assert_eq!(policy.backoff_for_attempt(18), Duration::from_millis(65_536));
+    assert_eq!(policy.backoff_for_attempt(19), Duration::from_millis(131_072));
+    assert_eq!(policy.backoff_for_attempt(20), Duration::from_millis(262_144));
+    assert_eq!(policy.backoff_for_attempt(21), Duration::from_secs(300));
+    assert_eq!(policy.backoff_for_attempt(u32::MAX), Duration::from_secs(300));
+
+    let largest = DeliveryPolicy {
+        initial_backoff: Duration::from_nanos(1),
+        max_backoff: Duration::MAX,
+        ..policy.clone()
+    };
+    assert_eq!(largest.backoff_for_attempt(u32::MAX), Duration::MAX);
+    let overflowing_product = DeliveryPolicy {
+        initial_backoff: Duration::MAX,
+        ..largest.clone()
+    };
+    assert_eq!(overflowing_product.backoff_for_attempt(129), Duration::MAX);
+    let zero = DeliveryPolicy {
+        initial_backoff: Duration::ZERO,
+        ..largest
+    };
+    assert_eq!(zero.backoff_for_attempt(u32::MAX), Duration::ZERO);
+    let no_wait = DeliveryPolicy {
+        max_backoff: Duration::ZERO,
+        ..policy
+    };
+    assert_eq!(no_wait.backoff_for_attempt(u32::MAX), Duration::ZERO);
+
+    let default_policy = DeliveryPolicy::default();
+    assert_eq!(default_policy.backoff_for_attempt(0), Duration::ZERO);
+    for (attempt, millis) in [(1, 0), (2, 100), (3, 200), (4, 400), (5, 800)] {
+        assert_eq!(
+            default_policy.backoff_for_attempt(attempt),
+            Duration::from_millis(millis)
+        );
+    }
+}

@@ -23,6 +23,11 @@ until `max_attempts` is exhausted.
 the default policy, attempts begin after waits of 0, 100, 200, 400 and 800 ms,
 plus the time spent in preceding transport calls. A successful attempt ends
 the loop immediately. Each wait is capped by `max_backoff`.
+The policy retains nanosecond precision: for attempt `n >= 2`, the requested
+wait is `min(initial_backoff * 2^(n - 2), max_backoff)`. Large attempt numbers
+saturate at the configured cap without wrapping; zero initial delay or zero
+cap still requests no wait. This describes requested delays, not a guarantee
+of the operating system's sleep precision.
 
 An embedding runtime can use `WebhookDeliverer::with_sleeper` and implement
 `RetrySleeper`. That implementation must actually wait for the requested delay;

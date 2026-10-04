@@ -31,15 +31,17 @@ impl DeliveryPolicy {
         if attempt <= 1 {
             return Duration::from_millis(0);
         }
-        let shift = (attempt - 2).min(16);
-        let millis = self
+        // Scale in nanoseconds so a nonzero sub-millisecond wait stays nonzero.
+        // Any factor beyond u128 already exceeds every representable Duration
+        // for a nonzero initial delay; saturation also keeps zero delays zero.
+        let factor = 1u128.checked_shl(attempt - 2).unwrap_or(u128::MAX);
+        let nanos = self
             .initial_backoff
-            .as_millis()
-            .saturating_mul(1u128 << shift);
-        let capped = millis
-            .min(self.max_backoff.as_millis())
-            .min(u128::from(u64::MAX));
-        Duration::from_millis(capped as u64)
+            .as_nanos()
+            .saturating_mul(factor)
+            .min(self.max_backoff.as_nanos());
+        // The cap is itself a Duration, so both components fit their types.
+        Duration::new((nanos / 1_000_000_000) as u64, (nanos % 1_000_000_000) as u32)
     }
 }
 
