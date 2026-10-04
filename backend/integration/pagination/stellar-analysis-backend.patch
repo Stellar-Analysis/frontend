@@ -1,0 +1,1725 @@
+diff --git a/README.md b/README.md
+index 160135699501a4db3ad4ab8439fc9f19625e7fe4..060659ffb38c2afc7690a1a1d1c23c2eff2bc8f1 100644
+--- a/README.md
++++ b/README.md
+@@ -10,6 +10,9 @@
+ 
+ </div>
+ 
++Live collection pagination is documented in [Cursor pagination](docs/CURSOR_PAGINATION.md),
++including continuation requests, immutable ordering and RPC snapshot expiry.
++
+ ---
+ 
+ ## What it does
+diff --git a/docs/CURSOR_PAGINATION.md b/docs/CURSOR_PAGINATION.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..bb26fe761561fb6f5f1b21f677934614d2007eed
+--- /dev/null
++++ b/docs/CURSOR_PAGINATION.md
+@@ -0,0 +1,93 @@
++# Cursor pagination for live collections
++
++The live list handlers use an immutable `(timestamp_ms, sequence)` key. The
++sequence is an SQLite `INTEGER PRIMARY KEY AUTOINCREMENT`. Public anchor IDs,
++ledger transaction hashes and emitted corridor IDs keep their existing values.
++
++## Requests
++
++The versioned routes are `/api/v1/anchors`, `/api/v1/corridors` and
++`/api/v1/ledger/transactions`. The existing router also exposes the corresponding
++unversioned routes. Start with `?limit=50` and continue with
++`?limit=50&cursor=<pagination.next_cursor>`. Retain the same corridor filters.
++
++The response keeps `data` and `pagination`. Pagination contains `limit`, the
++initial `total`, the incoming `cursor`, `has_next`, and `next_cursor`. The next
++cursor names the last returned row, not the lookahead row. A page reads at most
++one extra row to establish continuation; exhaustion returns no next cursor.
++
++Limits must be 1–100. Nonzero offsets return `400 INVALID_PAGINATION`; clients
++must switch to returned cursors. Traversal orders timestamp and sequence
++ascending. Anchor reliability and corridor metrics remain payload fields and
++do not reorder traversal. The existing corridor `sort_by` parameter does not
++replace that immutable ordering.
++
++The new ledger collection reads the existing `transactions` ingestion table.
++It does not list pending signing requests, XDR payloads, or signatures. Existing
++ingestion can store placeholder transaction records; this endpoint does not
++establish complete ledger decoding.
++
++## Cursor encoding
++
++The opaque value is unpadded URL-safe base64 of UTF-8 JSON:
++
++```json
++{"v":1,"scope":"anchors","ts":1767342245000,"id":42,"ceiling":999,"total":312,"snapshot":null}
++```
++
++`ts` and `id` form the strict seek boundary. `ceiling` excludes later inserts,
++including backdated ones. `total` retains the first-page count, avoiding a full
++count on every continuation. `scope` identifies the collection; corridor scopes
++also include SHA-256 of the filter and sort parameters. `snapshot` identifies
++a retained corridor result and is null for database collections.
++
++Unknown fields/versions, malformed encoding or JSON, negative totals, invalid
++sequence bounds, wrong scopes and values over 2048 encoded characters are
++rejected. Cursors carry traversal state and do not authorize access. Clients
++should reuse the returned opaque value rather than constructing it.
++
++## Database ordering
++
++Migration 035 backfills `pagination_keys` from anchors and ingested transactions.
++It normalizes SQLite/RFC3339 timestamps to integer milliseconds; legacy null or
++unparseable values sort at zero. Insert triggers allocate keys atomically with
++source rows. Ordinary metric/timestamp updates preserve keys; delete/recreate
++allocates a fresh sequence, keeping the replacement outside older ceilings.
++
++Page one reads ceiling, count and rows in one transaction. Continuations use:
++
++```sql
++WHERE p.resource = ? AND p.sequence <= ?
++  AND (p.timestamp_ms, p.sequence) > (?, ?)
++ORDER BY p.timestamp_ms ASC, p.sequence ASC LIMIT ?
++```
++
++The matching index is `idx_pagination_keys_seek(resource,timestamp_ms,sequence)`.
++Insert membership and ordering stay stable. Existing payloads may reflect
++updates and deleted rows disappear; the initial total is retained. Historical
++payload versions and deletion history are outside this guarantee.
++
++## RPC corridor snapshots
++
++The first-page cache miss retains the FULL filtered RPC result in one database
++transaction. The existing aggregation, emitted asset-pair IDs and filters remain.
++The snapshot is indexed by `(snapshot_id,timestamp_ms,sequence)`. Continuations
++read its payloads directly, without fetching payments/trades, recomputing prices
++or reevaluating filters against a moving RPC window.
++
++Snapshots expire after 15 minutes. Expired rows are removed when a new snapshot
++is stored. Missing/expired snapshots return `400 CURSOR_EXPIRED`; the handler
++does not substitute a fresh RPC result. First-page caching is capped at 5 minutes,
++and cache keys distinguish scope/cursor. Start a new traversal after expiration.
++
++## Required checks
++
++```sh
++cargo test --locked --test batch_collision_test --test concurrent_write_stability_test
++```
++
++These two files exercise the production selectors with SQLite and actual
++migrations 001/002/007/035: batch collisions, concurrent same-time/backdated
++inserts, cursor replay and retained corridor results after a newer snapshot.
++They cover selectors/storage, not HTTP composition, live-provider benchmarking,
++or sponsor acceptance. Runtime execution status belongs in the PR receipt.
+diff --git a/migrations/035_collision_proof_pagination.sql b/migrations/035_collision_proof_pagination.sql
+new file mode 100644
+index 0000000000000000000000000000000000000000..ded8e9b044ddb03bedab1109126602546302caab
+--- /dev/null
++++ b/migrations/035_collision_proof_pagination.sql
+@@ -0,0 +1,86 @@
++-- Stable list identities are separate from mutable metrics and caller-facing IDs.
++-- SQLite and RFC3339 creation timestamps are normalized to integer milliseconds.
++-- Legacy NULL or unparseable timestamps sort at epoch zero. Updating an entity's
++-- metrics or creation-time text never moves an already issued pagination key.
++CREATE TABLE IF NOT EXISTS pagination_keys (
++    sequence INTEGER PRIMARY KEY AUTOINCREMENT,
++    resource TEXT NOT NULL,
++    row_id TEXT NOT NULL,
++    timestamp_ms INTEGER NOT NULL,
++    UNIQUE (resource, row_id)
++);
++
++CREATE INDEX IF NOT EXISTS idx_pagination_keys_seek
++    ON pagination_keys(resource, timestamp_ms, sequence);
++
++INSERT OR IGNORE INTO pagination_keys(resource, row_id, timestamp_ms)
++SELECT 'anchors', id,
++       COALESCE(CAST(strftime('%s', created_at) AS INTEGER) * 1000
++                + CAST(substr(strftime('%f', created_at), 4, 3) AS INTEGER), 0)
++FROM anchors
++ORDER BY COALESCE(CAST(strftime('%s', created_at) AS INTEGER) * 1000
++                  + CAST(substr(strftime('%f', created_at), 4, 3) AS INTEGER), 0),
++         rowid;
++
++INSERT OR IGNORE INTO pagination_keys(resource, row_id, timestamp_ms)
++SELECT 'transactions', hash,
++       COALESCE(CAST(strftime('%s', created_at) AS INTEGER) * 1000
++                + CAST(substr(strftime('%f', created_at), 4, 3) AS INTEGER), 0)
++FROM transactions
++ORDER BY COALESCE(CAST(strftime('%s', created_at) AS INTEGER) * 1000
++                  + CAST(substr(strftime('%f', created_at), 4, 3) AS INTEGER), 0),
++         rowid;
++
++CREATE TRIGGER IF NOT EXISTS pagination_anchor_insert
++AFTER INSERT ON anchors
++BEGIN
++    INSERT INTO pagination_keys(resource, row_id, timestamp_ms)
++    VALUES ('anchors', NEW.id,
++            COALESCE(CAST(strftime('%s', NEW.created_at) AS INTEGER) * 1000
++                     + CAST(substr(strftime('%f', NEW.created_at), 4, 3) AS INTEGER), 0));
++END;
++
++CREATE TRIGGER IF NOT EXISTS pagination_anchor_delete
++AFTER DELETE ON anchors
++BEGIN
++    DELETE FROM pagination_keys WHERE resource = 'anchors' AND row_id = OLD.id;
++END;
++
++CREATE TRIGGER IF NOT EXISTS pagination_transaction_insert
++AFTER INSERT ON transactions
++BEGIN
++    INSERT INTO pagination_keys(resource, row_id, timestamp_ms)
++    VALUES ('transactions', NEW.hash,
++            COALESCE(CAST(strftime('%s', NEW.created_at) AS INTEGER) * 1000
++                     + CAST(substr(strftime('%f', NEW.created_at), 4, 3) AS INTEGER), 0));
++END;
++
++CREATE TRIGGER IF NOT EXISTS pagination_transaction_delete
++AFTER DELETE ON transactions
++BEGIN
++    DELETE FROM pagination_keys WHERE resource = 'transactions' AND row_id = OLD.hash;
++END;
++
++-- A remote corridor read has no durable database creation order. Store its
++-- filtered rows once, then seek through that same snapshot until it expires.
++CREATE TABLE IF NOT EXISTS pagination_snapshots (
++    id TEXT PRIMARY KEY,
++    scope TEXT NOT NULL,
++    created_at_ms INTEGER NOT NULL,
++    expires_at_ms INTEGER NOT NULL
++);
++
++CREATE INDEX IF NOT EXISTS idx_pagination_snapshots_expiration
++    ON pagination_snapshots(expires_at_ms);
++
++CREATE TABLE IF NOT EXISTS pagination_snapshot_rows (
++    sequence INTEGER PRIMARY KEY AUTOINCREMENT,
++    snapshot_id TEXT NOT NULL REFERENCES pagination_snapshots(id) ON DELETE CASCADE,
++    timestamp_ms INTEGER NOT NULL,
++    row_id TEXT NOT NULL,
++    payload TEXT NOT NULL,
++    UNIQUE (snapshot_id, row_id)
++);
++
++CREATE INDEX IF NOT EXISTS idx_pagination_snapshot_rows_seek
++    ON pagination_snapshot_rows(snapshot_id, timestamp_ms, sequence);
+diff --git a/src/api/anchors.rs b/src/api/anchors.rs
+index 8c465711d899198fc66845136c21dbe6eccd4677..5950de1a8430e8028aab7bb9b2ba68fbce0bede5 100644
+--- a/src/api/anchors.rs
++++ b/src/api/anchors.rs
+@@ -14,12 +14,12 @@ use uuid::Uuid;
+ 
+ use crate::broadcast::broadcast_anchor_update;
+ use crate::cache::helpers::cached_query;
+-use crate::cache::keys;
+ use crate::cache::CacheManager;
++use crate::cursor_pagination::{validate_page_request, CompoundCursor, CursorPaginatedResponse};
+ use crate::database::Database;
+ use crate::error::{ApiError, ApiResult};
+ use crate::models::{AnchorDetailResponse, CreateAnchorRequest};
+-use crate::pagination::PaginatedResponse;
++use crate::pagination_queries;
+ use crate::rpc::circuit_breaker::rpc_circuit_breaker;
+ use crate::rpc::error::{with_retry, RetryConfig, RpcError};
+ use crate::rpc::StellarRpcClient;
+@@ -305,6 +305,8 @@ pub struct ListAnchorsQuery {
+     #[serde(default)]
+     #[param(example = 0)]
+     pub offset: i64,
++    /// Opaque continuation from pagination.next_cursor. Omit for a new traversal.
++    pub cursor: Option<String>,
+ }
+ 
+ const fn default_limit() -> i64 {
+@@ -411,7 +413,8 @@ pub struct AnchorsResponse {
+     path = "/api/anchors",
+     params(ListAnchorsQuery),
+     responses(
+-        (status = 200, description = "List of anchors retrieved successfully", body = AnchorsResponse),
++        (status = 200, description = "List of anchors retrieved successfully", body = CursorPaginatedResponse<AnchorMetricsResponse>),
++        (status = 400, description = "Invalid cursor, limit, or offset"),
+         (status = 500, description = "Internal server error")
+     ),
+     tag = "Anchors"
+@@ -427,27 +430,44 @@ pub async fn get_anchors(
+     Query(params): Query<ListAnchorsQuery>,
+     headers: HeaderMap,
+ ) -> ApiResult<Response> {
+-    let cache_key = keys::anchor_list(params.limit, params.offset);
++    validate_page_request(params.limit, params.offset)
++        .map_err(|message| ApiError::bad_request("INVALID_PAGINATION", message))?;
++    if let Some(cursor) = params.cursor.as_deref() {
++        let decoded = CompoundCursor::decode(cursor, "anchors")
++            .map_err(|message| ApiError::bad_request("INVALID_CURSOR", message))?;
++        if decoded.snapshot.is_some() {
++            return Err(ApiError::bad_request(
++                "INVALID_CURSOR",
++                "Unexpected RPC snapshot",
++            ));
++        }
++    }
++    let cache_key = format!(
++        "anchor:list:cursor:v1:{}:{}",
++        params.limit,
++        params.cursor.as_deref().unwrap_or("first")
++    );
+ 
+     let response = cached_query(
+         &cache,
+         &cache_key,
+         cache.config.get_ttl("anchor"),
+         || async {
+-            // Get anchor metadata from database (names, accounts, etc.)
+-            let anchors: Vec<crate::models::Anchor> =
+-                db.list_anchors(params.limit, params.offset).await?;
+-
+-            // Total count for pagination metadata (runs in parallel with list query)
+-            let total = db.count_anchors().await.unwrap_or(0);
++            let CursorPaginatedResponse {
++                data: anchors,
++                pagination,
++            } = pagination_queries::list_anchors::<crate::models::Anchor>(
++                db.pool(),
++                params.limit,
++                params.cursor.as_deref(),
++            )
++            .await?;
+ 
+             if anchors.is_empty() {
+-                return Ok(PaginatedResponse::new(
+-                    Vec::<AnchorMetricsResponse>::new(),
+-                    total,
+-                    params.limit,
+-                    params.offset,
+-                ));
++                return Ok(CursorPaginatedResponse {
++                    data: Vec::<AnchorMetricsResponse>::new(),
++                    pagination,
++                });
+             }
+ 
+             // OPTIMIZATION: Batch fetch all assets for these anchors (1 query instead of N)
+@@ -545,12 +565,10 @@ pub async fn get_anchors(
+                 anchor_responses.push(anchor_response);
+             }
+ 
+-            Ok(PaginatedResponse::new(
+-                anchor_responses,
+-                total,
+-                params.limit,
+-                params.offset,
+-            ))
++            Ok(CursorPaginatedResponse {
++                data: anchor_responses,
++                pagination,
++            })
+         },
+     )
+     .await?;
+@@ -563,6 +581,7 @@ pub async fn get_anchors(
+ #[cfg(test)]
+ mod tests {
+     use super::*;
++    use crate::cache::keys;
+     use crate::cache::{CacheConfig, CacheManager};
+     use crate::rpc::circuit_breaker::rpc_circuit_breaker;
+     use crate::rpc::StellarRpcClient;
+diff --git a/src/api/corridors.rs b/src/api/corridors.rs
+index ca1cdfeaddf36bdefdc3e1ba49d885ca87d4c044..a8541d1e5298a0f2e5ff50f794d595f2548d15cc 100644
+--- a/src/api/corridors.rs
++++ b/src/api/corridors.rs
+@@ -15,11 +15,12 @@ use crate::broadcast::broadcast_corridor_update;
+ use crate::cache::helpers::cached_query;
+ use crate::cache::keys;
+ use crate::cache::CacheManager;
++use crate::cursor_pagination::{validate_page_request, CompoundCursor, CursorPaginatedResponse};
+ use crate::database::Database;
+ use crate::error::{ApiError, ApiResult};
+ use crate::models::corridor::Corridor;
+ use crate::models::{CreateCorridorRequest, SortBy};
+-use crate::pagination::PaginatedResponse;
++use crate::pagination_queries;
+ use crate::request_id::RequestId;
+ use crate::rpc::{
+     circuit_breaker::rpc_circuit_breaker,
+@@ -219,6 +220,8 @@ pub struct ListCorridorsQuery {
+     #[serde(default)]
+     #[param(example = 0)]
+     pub offset: i64,
++    /// Opaque continuation. Retain the same filters for every page of a traversal.
++    pub cursor: Option<String>,
+     /// Sort by field (`success_rate` or volume)
+     #[serde(default)]
+     pub sort_by: SortBy,
+@@ -288,7 +291,27 @@ fn generate_corridor_list_cache_key(params: &ListCorridorsQuery) -> String {
+         params.asset_code,
+         params.time_period
+     );
+-    keys::corridor_list(params.limit, params.offset, &filter_str)
++    format!(
++        "{}:cursor:v1:{}:{}",
++        keys::corridor_list(params.limit, params.offset, &filter_str),
++        generate_corridor_cursor_scope(params),
++        params.cursor.as_deref().unwrap_or("first")
++    )
++}
++
++fn generate_corridor_cursor_scope(params: &ListCorridorsQuery) -> String {
++    use sha2::{Digest, Sha256};
++    let filters = format!(
++        "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
++        params.success_rate_min,
++        params.success_rate_max,
++        params.volume_min,
++        params.volume_max,
++        params.asset_code,
++        params.time_period,
++        params.sort_by,
++    );
++    format!("corridors:{:x}", Sha256::digest(filters.as_bytes()))
+ }
+ 
+ /// List all payment corridors
+@@ -306,18 +329,19 @@ fn generate_corridor_list_cache_key(params: &ListCorridorsQuery) -> String {
+     path = "/api/corridors",
+     params(ListCorridorsQuery),
+     responses(
+-        (status = 200, description = "List of corridors retrieved successfully", body = Vec<CorridorResponse>),
++        (status = 200, description = "List of corridors retrieved successfully", body = CursorPaginatedResponse<CorridorResponse>),
++        (status = 400, description = "Invalid or expired cursor, invalid limit or offset"),
+         (status = 500, description = "Internal server error")
+     ),
+     tag = "Corridors"
+ )]
+ #[tracing::instrument(
+-    skip(_db, cache, rpc_client, price_feed, params),
++    skip(db, cache, rpc_client, price_feed, params),
+     fields(request_id = %request_id.0, query = ?params)
+ )]
+ pub async fn list_corridors(
+     Extension(request_id): Extension<RequestId>,
+-    State((_db, cache, rpc_client, price_feed)): State<(
++    State((db, cache, rpc_client, price_feed)): State<(
+         Arc<Database>,
+         Arc<CacheManager>,
+         Arc<StellarRpcClient>,
+@@ -328,6 +352,14 @@ pub async fn list_corridors(
+ ) -> ApiResult<Response> {
+     info!("Listing corridors");
+ 
++    validate_page_request(params.limit, params.offset)
++        .map_err(|message| ApiError::bad_request("INVALID_PAGINATION", message))?;
++    let scope = generate_corridor_cursor_scope(&params);
++    if let Some(cursor) = params.cursor.as_deref() {
++        CompoundCursor::decode(cursor, &scope)
++            .map_err(|message| ApiError::bad_request("INVALID_CURSOR", message))?;
++    }
++
+     validation::validate_corridor_filters(
+         params.success_rate_min,
+         params.success_rate_max,
+@@ -337,10 +369,27 @@ pub async fn list_corridors(
+ 
+     let cache_key = generate_corridor_list_cache_key(&params);
+ 
++    if let Some(cursor) = params.cursor.as_deref() {
++        let corridors = pagination_queries::snapshot_page::<CorridorResponse>(
++            db.pool(),
++            &scope,
++            params.limit,
++            Some(cursor),
++            None,
++        )
++        .await?;
++        crate::observability::metrics::set_corridors_tracked(corridors.pagination.total);
++        return crate::http_cache::cached_json_response(
++            &headers,
++            &cache_key,
++            &corridors,
++            cache.config.get_ttl("corridor").min(300),
++        );
++    }
+     let corridors = cached_query(
+         &cache,
+         &cache_key,
+-        cache.config.get_ttl("corridor"),
++        cache.config.get_ttl("corridor").min(300),
+         || async {
+             let circuit_breaker = rpc_circuit_breaker();
+ 
+@@ -391,6 +440,7 @@ pub async fn list_corridors(
+ 
+             // Calculate metrics for each corridor
+             let mut corridor_responses = Vec::new();
++            let observed_at = chrono::Utc::now();
+ 
+             for (corridor_key, corridor_payments) in &corridor_map {
+                 let total_attempts = corridor_payments.len() as i64;
+@@ -457,7 +507,7 @@ pub async fn list_corridors(
+                     liquidity_volume_24h_usd: volume_usd * 0.1,
+                     liquidity_trend,
+                     health_score,
+-                    last_updated: chrono::Utc::now().to_rfc3339(),
++                    last_updated: observed_at.to_rfc3339(),
+                 };
+ 
+                 corridor_responses.push(corridor_response);
+@@ -502,27 +552,28 @@ pub async fn list_corridors(
+                 })
+                 .collect();
+ 
+-            // Apply limit/offset pagination to the filtered results
+-            let total = filtered.len() as i64;
+-            let page: Vec<_> = filtered
++            // Freeze the FULL filtered RPC result before selecting page one.
++            // Continuations read these payloads without refetching a moving RPC window.
++            let rows = filtered
+                 .into_iter()
+-                .skip(params.offset as usize)
+-                .take(params.limit as usize)
++                .map(|row| (observed_at.timestamp_millis(), row.id.clone(), row))
+                 .collect();
+-
+-            Ok(PaginatedResponse::new(
+-                page,
+-                total,
++            let snapshot = pagination_queries::store_snapshot(db.pool(), &scope, rows).await?;
++            Ok(pagination_queries::snapshot_page::<CorridorResponse>(
++                db.pool(),
++                &scope,
+                 params.limit,
+-                params.offset,
+-            ))
++                None,
++                Some(&snapshot),
++            )
++            .await?)
+         },
+     )
+     .await?;
+ 
+     crate::observability::metrics::set_corridors_tracked(corridors.pagination.total);
+ 
+-    let ttl = cache.config.get_ttl("corridor");
++    let ttl = cache.config.get_ttl("corridor").min(300);
+     let response = crate::http_cache::cached_json_response(&headers, &cache_key, &corridors, ttl)?;
+     Ok(response)
+ }
+diff --git a/src/api/transactions.rs b/src/api/transactions.rs
+index dd535f1b7caa3263e2258706acebcdac68b113bd..6f6e0e89824dbe3325de0655bcb19abec64a8364 100644
+--- a/src/api/transactions.rs
++++ b/src/api/transactions.rs
+@@ -1,10 +1,12 @@
+ use axum::{
+-    extract::{Path, State},
++    extract::{Path, Query, State},
+     http::StatusCode,
+     routing::{get, post},
+     Json, Router,
+ };
+ use serde::Deserialize;
++use std::sync::Arc;
++use utoipa::IntoParams;
+ use uuid::Uuid;
+ 
+ use crate::{
+@@ -12,6 +14,54 @@ use crate::{
+     state::AppState,
+ };
+ 
++use crate::cursor_pagination::{validate_page_request, CursorPaginatedResponse};
++use crate::database::Database;
++use crate::error::{ApiError, ApiResult};
++use crate::pagination_queries::{self, LedgerTransaction};
++
++/// Query parameters for the ingested ledger transaction collection.
++#[derive(Debug, Deserialize, IntoParams)]
++#[into_params(parameter_in = Query)]
++pub struct ListLedgerTransactionsQuery {
++    #[serde(default = "default_list_limit")]
++    pub limit: i64,
++    #[serde(default)]
++    pub offset: i64,
++    pub cursor: Option<String>,
++}
++
++const fn default_list_limit() -> i64 {
++    50
++}
++
++/// List stored ledger-ingestion records; pending signing requests are separate.
++#[utoipa::path(
++    get,
++    path = "/api/v1/ledger/transactions",
++    params(ListLedgerTransactionsQuery),
++    responses(
++        (status = 200, description = "Stored ledger transaction page", body = CursorPaginatedResponse<LedgerTransaction>),
++        (status = 400, description = "Invalid cursor, limit, or offset"),
++        (status = 500, description = "Database error")
++    ),
++    tag = "Transactions"
++)]
++pub async fn list_ledger_transactions(
++    State(db): State<Arc<Database>>,
++    Query(params): Query<ListLedgerTransactionsQuery>,
++) -> ApiResult<Json<CursorPaginatedResponse<LedgerTransaction>>> {
++    validate_page_request(params.limit, params.offset)
++        .map_err(|message| ApiError::bad_request("INVALID_PAGINATION", message))?;
++    Ok(Json(
++        pagination_queries::list_ledger_transactions(
++            db.pool(),
++            params.limit,
++            params.cursor.as_deref(),
++        )
++        .await?,
++    ))
++}
++
+ // Request/Response DTOs
+ #[derive(Debug, Deserialize)]
+ pub struct CreateTransactionRequest {
+diff --git a/src/api/v1/mod.rs b/src/api/v1/mod.rs
+index a3677c8afa44f712a391a15ff1765b6a095b37ac..35121928ac33856ea8878007ba90e8d771d6c7fe 100644
+--- a/src/api/v1/mod.rs
++++ b/src/api/v1/mod.rs
+@@ -98,6 +98,12 @@ pub fn routes(
+ 
+     // Captured before `app_state` is moved into `protected_routes` below.
+     let wallets_db = app_state.db.clone();
++    let ledger_routes = Router::new()
++        .route(
++            "/ledger/transactions",
++            get(crate::api::transactions::list_ledger_transactions),
++        )
++        .with_state(app_state.db.clone());
+ 
+     // 2. Public anchor routes
+     let public_anchor_routes = Router::new()
+@@ -174,6 +180,7 @@ pub fn routes(
+     // V1 router (mounted at /api/v1 and also preserved at root for compatibility)
+     let v1_router = Router::new()
+         .merge(cached_routes)
++        .merge(ledger_routes)
+         .merge(public_anchor_routes)
+         .merge(protected_routes)
+         .merge(protected_webhook_routes)
+diff --git a/src/cursor_pagination.rs b/src/cursor_pagination.rs
+index ffb78118f41034f384bdac55b7df3918a17ce605..4c73c7f5b339cd4d2fdf13e319e3398d2b9d0132 100644
+--- a/src/cursor_pagination.rs
++++ b/src/cursor_pagination.rs
+@@ -18,6 +18,62 @@
+ use serde::{Deserialize, Serialize};
+ use utoipa::ToSchema;
+ 
++/// A versioned seek boundary over an immutable timestamp and monotonic sequence.
++/// `ceiling` excludes rows inserted after the first page, including backdated rows.
++/// RPC collections also bind the boundary to a retained result snapshot.
++#[derive(Debug, Clone, Serialize, Deserialize)]
++#[serde(deny_unknown_fields)]
++pub struct CompoundCursor {
++    pub v: u8,
++    pub scope: String,
++    pub ts: i64,
++    pub id: i64,
++    pub ceiling: i64,
++    pub total: i64,
++    pub snapshot: Option<String>,
++}
++
++impl CompoundCursor {
++    pub fn encode(&self) -> Result<String, serde_json::Error> {
++        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
++        Ok(URL_SAFE_NO_PAD.encode(serde_json::to_vec(self)?))
++    }
++
++    pub fn decode(encoded: &str, scope: &str) -> Result<Self, String> {
++        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
++        if encoded.len() > 2048 {
++            return Err("Cursor exceeds the maximum encoded length".to_string());
++        }
++        let bytes = URL_SAFE_NO_PAD
++            .decode(encoded)
++            .map_err(|_| "Invalid cursor encoding".to_string())?;
++        let cursor: Self =
++            serde_json::from_slice(&bytes).map_err(|_| "Invalid cursor payload".to_string())?;
++        if cursor.v != 1
++            || cursor.scope != scope
++            || cursor.id <= 0
++            || cursor.id > cursor.ceiling
++            || cursor.total < 0
++            || cursor.snapshot.as_ref().is_some_and(|id| id.len() > 64)
++        {
++            return Err("Cursor does not match this collection or traversal".to_string());
++        }
++        Ok(cursor)
++    }
++}
++
++/// Cursor pages use a bounded positive limit. Offset traversal has been replaced
++/// by the returned opaque cursor; mixing the two would reintroduce unstable seeks.
++pub fn validate_page_request(limit: i64, offset: i64) -> Result<(), String> {
++    if !(1..=100).contains(&limit) {
++        return Err("limit must be between 1 and 100".to_string());
++    }
++    if offset != 0 {
++        return Err("Use pagination.next_cursor instead of a nonzero offset".to_string());
++    }
++    Ok(())
++}
++
+ /// Cursor-based pagination metadata for efficient traversal.
+ #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+ pub struct CursorPageMeta {
+@@ -41,7 +97,13 @@ pub struct CursorPageMeta {
+ impl CursorPageMeta {
+     /// Create pagination metadata for a cursor-based response.
+     #[must_use]
+-    pub fn new(total: i64, limit: i64, cursor: Option<String>, has_next: bool, next_cursor: Option<String>) -> Self {
++    pub fn new(
++        total: i64,
++        limit: i64,
++        cursor: Option<String>,
++        has_next: bool,
++        next_cursor: Option<String>,
++    ) -> Self {
+         Self {
+             limit,
+             total,
+@@ -115,7 +177,13 @@ mod tests {
+ 
+     #[test]
+     fn cursor_page_meta_has_next() {
+-        let meta = CursorPageMeta::new(100, 50, Some("cursor1".to_string()), true, Some("cursor2".to_string()));
++        let meta = CursorPageMeta::new(
++            100,
++            50,
++            Some("cursor1".to_string()),
++            true,
++            Some("cursor2".to_string()),
++        );
+         assert!(meta.has_next);
+         assert_eq!(meta.limit, 50);
+         assert_eq!(meta.total, 100);
+diff --git a/src/error.rs b/src/error.rs
+index df846e73a1ace4bddf3b5d17305ed2051e1a7260..c90af48f30529e7d4ea32dc6b5d9af40a39d57e9 100644
+--- a/src/error.rs
++++ b/src/error.rs
+@@ -276,6 +276,20 @@ impl From<anyhow::Error> for ApiError {
+     }
+ }
+ 
++impl From<crate::pagination_queries::PaginationError> for ApiError {
++    fn from(error: crate::pagination_queries::PaginationError) -> Self {
++        use crate::pagination_queries::PaginationError;
++        match error {
++            PaginationError::InvalidCursor(message) => Self::bad_request("INVALID_CURSOR", message),
++            PaginationError::ExpiredSnapshot => Self::bad_request(
++                "CURSOR_EXPIRED",
++                "This result snapshot has expired; restart from the first page",
++            ),
++            other => Self::internal("PAGINATION_ERROR", other.to_string()),
++        }
++    }
++}
++
+ /// Convert from `sqlx::Error`
+ impl From<sqlx::Error> for ApiError {
+     fn from(err: sqlx::Error) -> Self {
+diff --git a/src/lib.rs b/src/lib.rs
+index 6de97c5a7dbc81abe6a2b243b22cb214544bbd3e..489b5af6862f8196c701404123809e41a933cfe3 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -50,6 +50,7 @@ pub mod network;
+ pub mod observability;
+ pub mod openapi;
+ pub mod pagination;
++pub mod pagination_queries;
+ pub mod payload_limit;
+ pub mod queue; // Idempotent offline-sync queue processor (issue #93)
+ pub mod rate_limit;
+diff --git a/src/openapi.rs b/src/openapi.rs
+index b836d305a06ec70791eb86061ef379832efad1d0..076075d3ad0a4527d2849354541439fae1145b12 100644
+--- a/src/openapi.rs
++++ b/src/openapi.rs
+@@ -28,6 +28,7 @@ use utoipa::OpenApi;
+         // Corridors
+         crate::api::corridors::list_corridors,
+         crate::api::corridors::get_corridor_detail,
++        crate::api::transactions::list_ledger_transactions,
+         // Price Feed
+         crate::api::price_feed::get_price,
+         crate::api::price_feed::get_prices,
+diff --git a/src/pagination_queries.rs b/src/pagination_queries.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..cb235a75af35d50fa1b1478c8f818efe4af63ab1
+--- /dev/null
++++ b/src/pagination_queries.rs
+@@ -0,0 +1,329 @@
++//! Indexed cursor selectors used by the live list handlers.
++//!
++//! Database pages freeze insert membership with a sequence ceiling. Corridor
++//! pages retain the complete filtered RPC payload so a moving RPC window or a
++//! changed metric cannot remove rows halfway through traversal.
++
++use chrono::Utc;
++use serde::{de::DeserializeOwned, Deserialize, Serialize};
++use sqlx::{sqlite::SqliteRow, FromRow, QueryBuilder, Row, Sqlite, SqlitePool};
++use utoipa::ToSchema;
++
++use crate::cursor_pagination::{CompoundCursor, CursorPaginatedResponse};
++
++const SNAPSHOT_TTL_MS: i64 = 15 * 60 * 1000;
++
++#[derive(Debug, thiserror::Error)]
++pub enum PaginationError {
++    #[error("Invalid cursor: {0}")]
++    InvalidCursor(String),
++    #[error("This result snapshot has expired; restart from the first page")]
++    ExpiredSnapshot,
++    #[error(transparent)]
++    Database(#[from] sqlx::Error),
++    #[error(transparent)]
++    Json(#[from] serde_json::Error),
++}
++
++fn parse_cursor(
++    encoded: Option<&str>,
++    scope: &str,
++) -> Result<Option<CompoundCursor>, PaginationError> {
++    encoded
++        .map(|value| CompoundCursor::decode(value, scope).map_err(PaginationError::InvalidCursor))
++        .transpose()
++}
++
++/// Stored ledger-ingestion records. This deliberately excludes pending signing
++/// requests, their XDR payloads and collected signatures.
++#[derive(Debug, Clone, Serialize, Deserialize, FromRow, ToSchema)]
++pub struct LedgerTransaction {
++    pub hash: String,
++    pub ledger_sequence: i64,
++    pub source_account: Option<String>,
++    pub fee: Option<i64>,
++    pub operation_count: Option<i64>,
++    pub successful: Option<bool>,
++    pub created_at: Option<String>,
++}
++
++pub async fn list_anchors<T>(
++    pool: &SqlitePool,
++    limit: i64,
++    cursor: Option<&str>,
++) -> Result<CursorPaginatedResponse<T>, PaginationError>
++where
++    T: for<'row> FromRow<'row, SqliteRow> + Serialize,
++{
++    database_page(pool, "anchors", "anchors", "id", limit, cursor).await
++}
++
++pub async fn list_ledger_transactions(
++    pool: &SqlitePool,
++    limit: i64,
++    cursor: Option<&str>,
++) -> Result<CursorPaginatedResponse<LedgerTransaction>, PaginationError> {
++    database_page(pool, "transactions", "transactions", "hash", limit, cursor).await
++}
++
++// Table and identity names are private constants from the two callers above.
++// Query values, including all cursor fields, are always bound parameters.
++async fn database_page<T>(
++    pool: &SqlitePool,
++    resource: &str,
++    table: &str,
++    identity: &str,
++    limit: i64,
++    encoded: Option<&str>,
++) -> Result<CursorPaginatedResponse<T>, PaginationError>
++where
++    T: for<'row> FromRow<'row, SqliteRow> + Serialize,
++{
++    crate::cursor_pagination::validate_page_request(limit, 0)
++        .map_err(PaginationError::InvalidCursor)?;
++    let cursor = parse_cursor(encoded, resource)?;
++    if cursor
++        .as_ref()
++        .is_some_and(|value| value.snapshot.is_some())
++    {
++        return Err(PaginationError::InvalidCursor(
++            "Unexpected RPC snapshot".to_string(),
++        ));
++    }
++    let mut transaction = pool.begin().await?;
++    let ceiling = match &cursor {
++        Some(value) => value.ceiling,
++        None => {
++            sqlx::query_scalar::<_, i64>(
++                "SELECT COALESCE(MAX(sequence), 0) FROM pagination_keys WHERE resource = ?",
++            )
++            .bind(resource)
++            .fetch_one(&mut *transaction)
++            .await?
++        }
++    };
++    let joined = format!(
++        " FROM pagination_keys p JOIN {table} r ON r.{identity} = p.row_id \
++         WHERE p.resource = "
++    );
++    let total = if let Some(value) = &cursor {
++        value.total
++    } else {
++        let mut count = QueryBuilder::<Sqlite>::new(format!("SELECT COUNT(*){joined}"));
++        count
++            .push_bind(resource)
++            .push(" AND p.sequence <= ")
++            .push_bind(ceiling);
++        count
++            .build_query_scalar::<i64>()
++            .fetch_one(&mut *transaction)
++            .await?
++    };
++
++    let mut query = QueryBuilder::<Sqlite>::new(format!(
++        "SELECT r.*, p.timestamp_ms AS page_timestamp, p.sequence AS page_sequence{joined}"
++    ));
++    query
++        .push_bind(resource)
++        .push(" AND p.sequence <= ")
++        .push_bind(ceiling);
++    if let Some(value) = &cursor {
++        query
++            .push(" AND (p.timestamp_ms, p.sequence) > (")
++            .push_bind(value.ts)
++            .push(", ")
++            .push_bind(value.id)
++            .push(")");
++    }
++    query
++        .push(" ORDER BY p.timestamp_ms ASC, p.sequence ASC LIMIT ")
++        .push_bind(limit + 1);
++    let rows = query.build().fetch_all(&mut *transaction).await?;
++    transaction.commit().await?;
++    page_from_rows(
++        rows,
++        total,
++        limit,
++        encoded,
++        resource,
++        ceiling,
++        None,
++        |row| Ok(T::from_row(row)?),
++    )
++}
++
++fn page_from_rows<T, F>(
++    mut rows: Vec<SqliteRow>,
++    total: i64,
++    limit: i64,
++    encoded: Option<&str>,
++    scope: &str,
++    ceiling: i64,
++    snapshot: Option<&str>,
++    decode: F,
++) -> Result<CursorPaginatedResponse<T>, PaginationError>
++where
++    T: Serialize,
++    F: Fn(&SqliteRow) -> Result<T, PaginationError>,
++{
++    let has_next = rows.len() > limit as usize;
++    rows.truncate(limit as usize);
++    let next_cursor = if has_next {
++        rows.last()
++            .map(|row| {
++                Ok::<_, PaginationError>(
++                    CompoundCursor {
++                        v: 1,
++                        scope: scope.to_string(),
++                        ts: row.try_get("page_timestamp")?,
++                        id: row.try_get("page_sequence")?,
++                        ceiling,
++                        total,
++                        snapshot: snapshot.map(str::to_string),
++                    }
++                    .encode()?,
++                )
++            })
++            .transpose()?
++    } else {
++        None
++    };
++    let data = rows.iter().map(decode).collect::<Result<Vec<_>, _>>()?;
++    Ok(CursorPaginatedResponse::new(
++        data,
++        total,
++        limit,
++        encoded.map(str::to_string),
++        has_next,
++        next_cursor,
++    ))
++}
++
++/// Retain a complete RPC result in one transaction before returning its first page.
++/// Each tuple contains (observed timestamp in ms, emitted public ID, payload).
++pub async fn store_snapshot<T: Serialize>(
++    pool: &SqlitePool,
++    scope: &str,
++    mut rows: Vec<(i64, String, T)>,
++) -> Result<String, PaginationError> {
++    rows.sort_by(|left, right| (left.0, &left.1).cmp(&(right.0, &right.1)));
++    let id = uuid::Uuid::new_v4().to_string();
++    let now = Utc::now().timestamp_millis();
++    let mut transaction = pool.begin().await?;
++    sqlx::query(
++        "DELETE FROM pagination_snapshot_rows WHERE snapshot_id IN \
++        (SELECT id FROM pagination_snapshots WHERE expires_at_ms <= ?)",
++    )
++    .bind(now)
++    .execute(&mut *transaction)
++    .await?;
++    sqlx::query("DELETE FROM pagination_snapshots WHERE expires_at_ms <= ?")
++        .bind(now)
++        .execute(&mut *transaction)
++        .await?;
++    sqlx::query(
++        "INSERT INTO pagination_snapshots (id, scope, created_at_ms, expires_at_ms) \
++        VALUES (?, ?, ?, ?)",
++    )
++    .bind(&id)
++    .bind(scope)
++    .bind(now)
++    .bind(now + SNAPSHOT_TTL_MS)
++    .execute(&mut *transaction)
++    .await?;
++    for (timestamp_ms, row_id, payload) in rows {
++        sqlx::query(
++            "INSERT INTO pagination_snapshot_rows \
++            (snapshot_id, timestamp_ms, row_id, payload) VALUES (?, ?, ?, ?)",
++        )
++        .bind(&id)
++        .bind(timestamp_ms)
++        .bind(row_id)
++        .bind(serde_json::to_string(&payload)?)
++        .execute(&mut *transaction)
++        .await?;
++    }
++    transaction.commit().await?;
++    Ok(id)
++}
++
++/// Continue a retained RPC result. A missing/expired snapshot is an explicit error;
++/// callers must never replace it with a newly aggregated RPC result.
++pub async fn snapshot_page<T: Serialize + DeserializeOwned>(
++    pool: &SqlitePool,
++    scope: &str,
++    limit: i64,
++    encoded: Option<&str>,
++    first_snapshot: Option<&str>,
++) -> Result<CursorPaginatedResponse<T>, PaginationError> {
++    crate::cursor_pagination::validate_page_request(limit, 0)
++        .map_err(PaginationError::InvalidCursor)?;
++    let cursor = parse_cursor(encoded, scope)?;
++    let snapshot = match (&cursor, first_snapshot) {
++        (Some(value), None) => value.snapshot.as_deref(),
++        (None, Some(id)) => Some(id),
++        _ => None,
++    }
++    .ok_or_else(|| {
++        PaginationError::InvalidCursor("Missing or ambiguous result snapshot".to_string())
++    })?;
++    let mut transaction = pool.begin().await?;
++    let valid: i64 = sqlx::query_scalar(
++        "SELECT COUNT(*) FROM pagination_snapshots \
++        WHERE id = ? AND scope = ? AND expires_at_ms > ?",
++    )
++    .bind(snapshot)
++    .bind(scope)
++    .bind(Utc::now().timestamp_millis())
++    .fetch_one(&mut *transaction)
++    .await?;
++    if valid != 1 {
++        return Err(PaginationError::ExpiredSnapshot);
++    }
++    let (total, ceiling): (i64, i64) = sqlx::query_as(
++        "SELECT COUNT(*), COALESCE(MAX(sequence), 0) \
++        FROM pagination_snapshot_rows WHERE snapshot_id = ?",
++    )
++    .bind(snapshot)
++    .fetch_one(&mut *transaction)
++    .await?;
++    if cursor
++        .as_ref()
++        .is_some_and(|value| value.ceiling != ceiling || value.total != total)
++    {
++        return Err(PaginationError::InvalidCursor(
++            "Snapshot ceiling changed".to_string(),
++        ));
++    }
++    let mut query = QueryBuilder::<Sqlite>::new(
++        "SELECT payload, timestamp_ms AS page_timestamp, sequence AS page_sequence \
++         FROM pagination_snapshot_rows WHERE snapshot_id = ",
++    );
++    query.push_bind(snapshot);
++    if let Some(value) = &cursor {
++        query
++            .push(" AND (timestamp_ms, sequence) > (")
++            .push_bind(value.ts)
++            .push(", ")
++            .push_bind(value.id)
++            .push(")");
++    }
++    query
++        .push(" ORDER BY timestamp_ms ASC, sequence ASC LIMIT ")
++        .push_bind(limit + 1);
++    let rows = query.build().fetch_all(&mut *transaction).await?;
++    transaction.commit().await?;
++    page_from_rows(
++        rows,
++        total,
++        limit,
++        encoded,
++        scope,
++        ceiling,
++        Some(snapshot),
++        |row| {
++            let payload: String = row.try_get("payload")?;
++            Ok(serde_json::from_str(&payload)?)
++        },
++    )
++}
+diff --git a/tests/batch_collision_test.rs b/tests/batch_collision_test.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..9821a9ad12f4ae57287a4f2320b1f20d1d3b0b4f
+--- /dev/null
++++ b/tests/batch_collision_test.rs
+@@ -0,0 +1,308 @@
++use std::{
++    collections::{HashMap, HashSet},
++    error::Error,
++};
++
++use serde_json::{json, Value};
++use sqlx::{sqlite::SqlitePoolOptions, Row, SqlitePool};
++use stellar_analysis_backend::{
++    cursor_pagination::{CompoundCursor, CursorPageMeta},
++    pagination_queries::{list_anchors, list_ledger_transactions, snapshot_page, store_snapshot},
++};
++
++const CREATED_AT: &str = "2026-01-22T10:00:00.123Z";
++const BEFORE: [u8; 5] = [9, 1, 7, 0, 5];
++const AFTER: [u8; 6] = [8, 2, 10, 4, 6, 3];
++const LIMIT: i64 = 3;
++const SNAPSHOT_SCOPE: &str = "corridors:USD:active";
++
++#[derive(Debug, serde::Serialize, sqlx::FromRow)]
++struct AnchorRow {
++    id: String,
++}
++
++async fn seed(pool: &SqlitePool, ids: &[u8]) -> Result<(), sqlx::Error> {
++    for id in ids {
++        sqlx::query(
++            "INSERT INTO anchors (id, name, stellar_account, created_at) VALUES (?, ?, ?, ?)",
++        )
++        .bind(format!("anchor-{id:02}"))
++        .bind(format!("Anchor {id}"))
++        .bind(format!("account-{id:02}"))
++        .bind(CREATED_AT)
++        .execute(pool)
++        .await?;
++        sqlx::query(
++            "INSERT INTO transactions (hash, ledger_sequence, source_account, created_at) \
++             VALUES (?, 1, ?, ?)",
++        )
++        .bind(format!("tx-{id:02}"))
++        .bind(format!("account-{id:02}"))
++        .bind(CREATED_AT)
++        .execute(pool)
++        .await?;
++    }
++    Ok(())
++}
++
++async fn read_page(
++    pool: &SqlitePool,
++    scope: &str,
++    cursor: Option<&str>,
++    first_snapshot: Option<&str>,
++) -> Result<(Vec<String>, CursorPageMeta), Box<dyn Error>> {
++    Ok(match scope {
++        "anchors" => {
++            let page = list_anchors::<AnchorRow>(pool, LIMIT, cursor).await?;
++            (
++                page.data.into_iter().map(|row| row.id).collect(),
++                page.pagination,
++            )
++        }
++        "transactions" => {
++            let page = list_ledger_transactions(pool, LIMIT, cursor).await?;
++            (
++                page.data.into_iter().map(|row| row.hash).collect(),
++                page.pagination,
++            )
++        }
++        _ => {
++            let page = snapshot_page::<Value>(pool, scope, LIMIT, cursor, first_snapshot).await?;
++            let ids = page
++                .data
++                .iter()
++                .map(|row| {
++                    row["id"]
++                        .as_str()
++                        .map(str::to_owned)
++                        .ok_or("snapshot payload lacks an ID")
++                })
++                .collect::<Result<Vec<_>, _>>()?;
++            (ids, page.pagination)
++        }
++    })
++}
++
++fn assert_seek_index(rows: Vec<sqlx::sqlite::SqliteRow>, index: &str) -> Result<(), sqlx::Error> {
++    let plan = rows
++        .iter()
++        .map(|row| row.try_get::<String, _>("detail"))
++        .collect::<Result<Vec<_>, _>>()?
++        .join("\n");
++    assert!(
++        plan.contains(index),
++        "Expected {index} in query plan:\n{plan}"
++    );
++    assert!(
++        !plan.contains("USE TEMP B-TREE"),
++        "Unexpected pagination sort:\n{plan}"
++    );
++    Ok(())
++}
++
++#[tokio::test]
++async fn identical_timestamps_preserve_every_row_across_live_selectors_and_rpc_snapshot(
++) -> Result<(), Box<dyn Error>> {
++    let pool = SqlitePoolOptions::new()
++        .max_connections(1)
++        .connect("sqlite::memory:")
++        .await?;
++    sqlx::query("PRAGMA foreign_keys = ON")
++        .execute(&pool)
++        .await?;
++    for migration in [
++        include_str!("../migrations/001_create_anchors.sql"),
++        include_str!("../migrations/002_create_metrics_corridors_snapshots.sql"),
++        include_str!("../migrations/007_create_ledger_ingestion_tables.sql"),
++    ] {
++        sqlx::raw_sql(migration).execute(&pool).await?;
++    }
++    sqlx::query("INSERT INTO ledgers (sequence, hash, close_time) VALUES (1, 'ledger-1', ?)")
++        .bind(CREATED_AT)
++        .execute(&pool)
++        .await?;
++    seed(&pool, &BEFORE).await?;
++    sqlx::raw_sql(include_str!(
++        "../migrations/035_collision_proof_pagination.sql"
++    ))
++    .execute(&pool)
++    .await?;
++    let backfilled: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM pagination_keys")
++        .fetch_one(&pool)
++        .await?;
++    assert_eq!(backfilled, (BEFORE.len() * 2) as i64);
++    seed(&pool, &AFTER).await?;
++
++    let timestamp_ms = chrono::DateTime::parse_from_rfc3339(CREATED_AT)?.timestamp_millis();
++    let total = BEFORE.len() + AFTER.len();
++    let snapshot = store_snapshot(
++        &pool,
++        SNAPSHOT_SCOPE,
++        (0..total)
++            .rev()
++            .map(|id| {
++                let row_id = format!("corridor-{id:02}");
++                (
++                    timestamp_ms,
++                    row_id.clone(),
++                    json!({ "id": row_id, "status": "active" }),
++                )
++            })
++            .collect::<Vec<_>>(),
++    )
++    .await?;
++
++    for scope in ["anchors", "transactions", SNAPSHOT_SCOPE] {
++        let is_snapshot = scope == SNAPSHOT_SCOPE;
++        let snapshot_id = is_snapshot.then_some(snapshot.as_str());
++        let expected: Vec<String> = if is_snapshot {
++            (0..total).map(|id| format!("corridor-{id:02}")).collect()
++        } else {
++            let prefix = if scope == "anchors" { "anchor" } else { "tx" };
++            BEFORE
++                .iter()
++                .chain(AFTER.iter())
++                .map(|id| format!("{prefix}-{id:02}"))
++                .collect()
++        };
++        let key_rows: Vec<(String, i64, i64)> = if is_snapshot {
++            sqlx::query_as(
++                "SELECT row_id, timestamp_ms, sequence FROM pagination_snapshot_rows \
++                            WHERE snapshot_id = ?",
++            )
++            .bind(&snapshot)
++            .fetch_all(&pool)
++            .await?
++        } else {
++            sqlx::query_as(
++                "SELECT row_id, timestamp_ms, sequence FROM pagination_keys \
++                            WHERE resource = ?",
++            )
++            .bind(scope)
++            .fetch_all(&pool)
++            .await?
++        };
++        assert_eq!(
++            key_rows.len(),
++            total,
++            "{scope} missed backfill or trigger registration"
++        );
++        let ceiling = key_rows
++            .iter()
++            .map(|row| row.2)
++            .max()
++            .ok_or("missing pagination keys")?;
++        let keys: HashMap<_, _> = key_rows
++            .into_iter()
++            .map(|(id, ts, seq)| (id, (ts, seq)))
++            .collect();
++        let mut cursor: Option<String> = None;
++        let mut seen = Vec::new();
++        let mut unique = HashSet::new();
++        let mut previous_key = None;
++        let page_count = total.div_ceil(LIMIT as usize);
++        assert!(page_count > 2);
++
++        for page_number in 0..page_count {
++            let (ids, meta) = read_page(
++                &pool,
++                scope,
++                cursor.as_deref(),
++                if page_number == 0 { snapshot_id } else { None },
++            )
++            .await?;
++            assert_eq!(
++                ids.len(),
++                (total - seen.len()).min(LIMIT as usize),
++                "{scope}"
++            );
++            assert_eq!(meta.total, total as i64, "{scope} total changed");
++            assert_eq!(meta.limit, LIMIT);
++            assert_eq!(meta.cursor.as_deref(), cursor.as_deref());
++            assert_eq!(meta.has_next, page_number + 1 < page_count, "{scope}");
++            assert_eq!(meta.next_cursor.is_some(), meta.has_next, "{scope}");
++            for id in &ids {
++                assert!(unique.insert(id.clone()), "{scope} repeated {id}");
++                let key = *keys.get(id).ok_or("returned ID has no pagination key")?;
++                assert_eq!(
++                    key.0, timestamp_ms,
++                    "{scope} timestamp normalization changed"
++                );
++                assert!(key.1 > 0 && key.1 <= ceiling);
++                if let Some(previous) = previous_key {
++                    assert!(key > previous, "{scope} tuple keys did not advance");
++                }
++                previous_key = Some(key);
++            }
++            if let Some(next) = &meta.next_cursor {
++                let boundary = CompoundCursor::decode(next, scope)?;
++                assert_eq!(
++                    Some((boundary.ts, boundary.id)),
++                    previous_key,
++                    "{scope} cursor must identify the last emitted row"
++                );
++                assert_eq!(boundary.ceiling, ceiling);
++                assert_eq!(boundary.snapshot.as_deref(), snapshot_id);
++            }
++            seen.extend(ids);
++            cursor = meta.next_cursor;
++        }
++        assert_eq!(seen, expected, "{scope} lost rows or changed their order");
++        assert_eq!(unique.len(), total);
++        assert!(
++            cursor.is_none(),
++            "{scope} advertised continuation beyond the last page"
++        );
++
++        let (ts, id) = previous_key.ok_or("no final row")?;
++        let terminal = CompoundCursor {
++            v: 1,
++            scope: scope.to_owned(),
++            ts,
++            id,
++            ceiling,
++            total: total as i64,
++            snapshot: snapshot_id.map(str::to_owned),
++        }
++        .encode()?;
++        let (ids, meta) = read_page(&pool, scope, Some(&terminal), None).await?;
++        assert!(ids.is_empty(), "{scope} returned rows past the final tuple");
++        assert_eq!(meta.total, total as i64);
++        assert!(!meta.has_next);
++        assert!(meta.next_cursor.is_none());
++
++        if scope == "anchors" {
++            let rows = sqlx::query(
++                "EXPLAIN QUERY PLAN \
++                SELECT r.*, p.timestamp_ms AS page_timestamp, p.sequence AS page_sequence \
++                FROM pagination_keys p JOIN anchors r ON r.id = p.row_id \
++                WHERE p.resource = ? AND p.sequence <= ? AND (p.timestamp_ms, p.sequence) > (?, ?) \
++                ORDER BY p.timestamp_ms ASC, p.sequence ASC LIMIT ?",
++            )
++            .bind(scope)
++            .bind(ceiling)
++            .bind(timestamp_ms)
++            .bind(0_i64)
++            .bind(LIMIT + 1)
++            .fetch_all(&pool)
++            .await?;
++            assert_seek_index(rows, "idx_pagination_keys_seek")?;
++        } else if is_snapshot {
++            let rows = sqlx::query(
++                "EXPLAIN QUERY PLAN \
++                SELECT payload, timestamp_ms AS page_timestamp, sequence AS page_sequence \
++                FROM pagination_snapshot_rows WHERE snapshot_id = ? \
++                AND (timestamp_ms, sequence) > (?, ?) \
++                ORDER BY timestamp_ms ASC, sequence ASC LIMIT ?",
++            )
++            .bind(&snapshot)
++            .bind(timestamp_ms)
++            .bind(0_i64)
++            .bind(LIMIT + 1)
++            .fetch_all(&pool)
++            .await?;
++            assert_seek_index(rows, "idx_pagination_snapshot_rows_seek")?;
++        }
++    }
++    Ok(())
++}
+diff --git a/tests/concurrent_write_stability_test.rs b/tests/concurrent_write_stability_test.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..a0784355653f4224aba9c4cf1bbea59b83b0eef2
+--- /dev/null
++++ b/tests/concurrent_write_stability_test.rs
+@@ -0,0 +1,319 @@
++use serde_json::{json, Value};
++use sqlx::sqlite::SqlitePoolOptions;
++use stellar_analysis_backend::pagination_queries::{
++    list_anchors, list_ledger_transactions, snapshot_page, store_snapshot, PaginationError,
++};
++
++#[derive(Debug, serde::Serialize, sqlx::FromRow)]
++struct AnchorRow {
++    id: String,
++}
++
++#[tokio::test]
++async fn traversal_survives_concurrent_inserts_updates_and_new_rpc_snapshots(
++) -> Result<(), Box<dyn std::error::Error>> {
++    const ROWS: i64 = 7;
++    const LIMIT: i64 = 2;
++    const CREATED: &str = "2026-01-02 03:04:05";
++    const SCOPE: &str = "corridors:asset=USDC";
++
++    let pool = SqlitePoolOptions::new()
++        .max_connections(1)
++        .connect("sqlite::memory:")
++        .await?;
++    for migration in [
++        include_str!("../migrations/001_create_anchors.sql"),
++        include_str!("../migrations/002_create_metrics_corridors_snapshots.sql"),
++        include_str!("../migrations/007_create_ledger_ingestion_tables.sql"),
++        include_str!("../migrations/035_collision_proof_pagination.sql"),
++    ] {
++        sqlx::raw_sql(migration).execute(&pool).await?;
++    }
++    sqlx::query("INSERT INTO ledgers (sequence, hash, close_time) VALUES (1, 'ledger', ?)")
++        .bind(CREATED)
++        .execute(&pool)
++        .await?;
++    for index in 0..ROWS {
++        sqlx::query(
++            "INSERT INTO anchors (id, name, stellar_account, reliability_score, created_at) \
++             VALUES (?, ?, ?, ?, ?)",
++        )
++        .bind(format!("anchor-{index}"))
++        .bind(format!("Anchor {index}"))
++        .bind(format!("account-{index}"))
++        .bind(50.0 + index as f64)
++        .bind(CREATED)
++        .execute(&pool)
++        .await?;
++        sqlx::query(
++            "INSERT INTO transactions (hash, ledger_sequence, source_account, successful, created_at) \
++             VALUES (?, 1, ?, 1, ?)",
++        )
++        .bind(format!("transaction-{index}"))
++        .bind(format!("account-{index}"))
++        .bind(CREATED)
++        .execute(&pool)
++        .await?;
++    }
++    let original_keys: Vec<(String, String, i64, i64)> = sqlx::query_as(
++        "SELECT resource, row_id, timestamp_ms, sequence FROM pagination_keys ORDER BY sequence",
++    )
++    .fetch_all(&pool)
++    .await?;
++    let original_payloads: Vec<Value> = (0..ROWS)
++        .map(|index| json!({"id": format!("corridor-{index}"), "volume": index + 1}))
++        .collect();
++    let snapshot = store_snapshot(
++        &pool,
++        SCOPE,
++        original_payloads
++            .iter()
++            .enumerate()
++            .map(|(index, payload)| {
++                (
++                    1_767_323_045_000,
++                    format!("corridor-{index}"),
++                    payload.clone(),
++                )
++            })
++            .collect(),
++    )
++    .await?;
++
++    let anchor_first = list_anchors::<AnchorRow>(&pool, LIMIT, None).await?;
++    let transaction_first = list_ledger_transactions(&pool, LIMIT, None).await?;
++    let snapshot_first = snapshot_page::<Value>(&pool, SCOPE, LIMIT, None, Some(&snapshot)).await?;
++    let anchor_cursor = anchor_first
++        .pagination
++        .next_cursor
++        .clone()
++        .ok_or("expected an anchor continuation")?;
++    let transaction_cursor = transaction_first
++        .pagination
++        .next_cursor
++        .clone()
++        .ok_or("expected a transaction continuation")?;
++    let snapshot_cursor = snapshot_first
++        .pagination
++        .next_cursor
++        .clone()
++        .ok_or("expected a corridor continuation")?;
++    let anchor_before = list_anchors::<AnchorRow>(&pool, LIMIT, Some(&anchor_cursor)).await?;
++    let transaction_before =
++        list_ledger_transactions(&pool, LIMIT, Some(&transaction_cursor)).await?;
++    let snapshot_before =
++        snapshot_page::<Value>(&pool, SCOPE, LIMIT, Some(&snapshot_cursor), None).await?;
++
++    // A separate writer commits between page one and its continuation. This
++    // controlled interleaving exercises concurrent traversal without timing sleeps.
++    let writer_pool = pool.clone();
++    tokio::spawn(async move {
++        let mut write = writer_pool.begin().await?;
++        for (suffix, timestamp) in [("same", CREATED), ("backdated", "2020-01-02 03:04:05")] {
++            sqlx::query(
++                "INSERT INTO anchors (id, name, stellar_account, created_at) VALUES (?, ?, ?, ?)",
++            )
++            .bind(format!("late-anchor-{suffix}"))
++            .bind(format!("Late {suffix}"))
++            .bind(format!("late-account-{suffix}"))
++            .bind(timestamp)
++            .execute(&mut *write)
++            .await?;
++            sqlx::query(
++                "INSERT INTO transactions (hash, ledger_sequence, created_at) VALUES (?, 1, ?)",
++            )
++            .bind(format!("late-transaction-{suffix}"))
++            .bind(timestamp)
++            .execute(&mut *write)
++            .await?;
++        }
++        // Move one already returned row forward and one unseen row backward.
++        sqlx::query(
++            "UPDATE anchors SET created_at = CASE id WHEN 'anchor-0' \
++             THEN '2099-01-01 00:00:00' ELSE '1900-01-01 00:00:00' END, \
++             reliability_score = CASE id WHEN 'anchor-0' THEN 100 ELSE 0 END \
++             WHERE id IN ('anchor-0', 'anchor-5')",
++        )
++        .execute(&mut *write)
++        .await?;
++        sqlx::query(
++            "UPDATE transactions SET created_at = CASE hash WHEN 'transaction-0' \
++             THEN '2099-01-01 00:00:00' ELSE '1900-01-01 00:00:00' END \
++             WHERE hash IN ('transaction-0', 'transaction-5')",
++        )
++        .execute(&mut *write)
++        .await?;
++        write.commit().await
++    })
++    .await??;
++
++    let keys_after: Vec<(String, String, i64, i64)> = sqlx::query_as(
++        "SELECT resource, row_id, timestamp_ms, sequence FROM pagination_keys \
++         WHERE row_id NOT LIKE 'late-%' ORDER BY sequence",
++    )
++    .fetch_all(&pool)
++    .await?;
++    assert_eq!(
++        keys_after, original_keys,
++        "updates must preserve both order keys"
++    );
++
++    let replacement = store_snapshot(
++        &pool,
++        SCOPE,
++        vec![
++            (
++                1_767_323_045_000,
++                "corridor-1".to_string(),
++                json!({"id": "corridor-1", "volume": 999}),
++            ),
++            (
++                1_767_323_045_000,
++                "new-corridor".to_string(),
++                json!({"id": "new-corridor", "volume": 999}),
++            ),
++        ],
++    )
++    .await?;
++    assert_ne!(replacement, snapshot);
++    let replacement_first =
++        snapshot_page::<Value>(&pool, SCOPE, LIMIT, None, Some(&replacement)).await?;
++    assert_eq!(replacement_first.pagination.total, 2);
++    assert_eq!(replacement_first.data[0]["volume"], json!(999));
++
++    let anchor_replay = list_anchors::<AnchorRow>(&pool, LIMIT, Some(&anchor_cursor)).await?;
++    assert_eq!(
++        anchor_replay
++            .data
++            .iter()
++            .map(|row| &row.id)
++            .collect::<Vec<_>>(),
++        anchor_before
++            .data
++            .iter()
++            .map(|row| &row.id)
++            .collect::<Vec<_>>()
++    );
++    let transaction_replay =
++        list_ledger_transactions(&pool, LIMIT, Some(&transaction_cursor)).await?;
++    assert_eq!(
++        transaction_replay
++            .data
++            .iter()
++            .map(|row| &row.hash)
++            .collect::<Vec<_>>(),
++        transaction_before
++            .data
++            .iter()
++            .map(|row| &row.hash)
++            .collect::<Vec<_>>()
++    );
++    let snapshot_replay =
++        snapshot_page::<Value>(&pool, SCOPE, LIMIT, Some(&snapshot_cursor), None).await?;
++    assert_eq!(snapshot_replay.data, snapshot_before.data);
++    assert_eq!(
++        anchor_replay.pagination.next_cursor,
++        anchor_before.pagination.next_cursor
++    );
++    assert_eq!(
++        transaction_replay.pagination.next_cursor,
++        transaction_before.pagination.next_cursor
++    );
++    assert_eq!(
++        snapshot_replay.pagination.next_cursor,
++        snapshot_before.pagination.next_cursor
++    );
++
++    let mut anchor_ids: Vec<_> = anchor_first.data.into_iter().map(|row| row.id).collect();
++    let mut transaction_ids: Vec<_> = transaction_first
++        .data
++        .into_iter()
++        .map(|row| row.hash)
++        .collect();
++    let mut payloads = snapshot_first.data;
++    let mut anchors_next = Some(anchor_cursor.clone());
++    let mut transactions_next = Some(transaction_cursor.clone());
++    let mut snapshots_next = Some(snapshot_cursor.clone());
++    for _ in 0..ROWS {
++        if let Some(cursor) = anchors_next.take() {
++            let page = list_anchors::<AnchorRow>(&pool, LIMIT, Some(&cursor)).await?;
++            assert_eq!(page.pagination.total, ROWS);
++            assert_eq!(
++                page.pagination.has_next,
++                page.pagination.next_cursor.is_some()
++            );
++            anchor_ids.extend(page.data.into_iter().map(|row| row.id));
++            anchors_next = page.pagination.next_cursor;
++        }
++        if let Some(cursor) = transactions_next.take() {
++            let page = list_ledger_transactions(&pool, LIMIT, Some(&cursor)).await?;
++            assert_eq!(page.pagination.total, ROWS);
++            assert_eq!(
++                page.pagination.has_next,
++                page.pagination.next_cursor.is_some()
++            );
++            transaction_ids.extend(page.data.into_iter().map(|row| row.hash));
++            transactions_next = page.pagination.next_cursor;
++        }
++        if let Some(cursor) = snapshots_next.take() {
++            let page = snapshot_page::<Value>(&pool, SCOPE, LIMIT, Some(&cursor), None).await?;
++            assert_eq!(page.pagination.total, ROWS);
++            assert_eq!(
++                page.pagination.has_next,
++                page.pagination.next_cursor.is_some()
++            );
++            payloads.extend(page.data);
++            snapshots_next = page.pagination.next_cursor;
++        }
++    }
++    assert!(anchors_next.is_none() && transactions_next.is_none() && snapshots_next.is_none());
++    assert_eq!(
++        anchor_ids,
++        (0..ROWS)
++            .map(|index| format!("anchor-{index}"))
++            .collect::<Vec<_>>()
++    );
++    assert_eq!(
++        transaction_ids,
++        (0..ROWS)
++            .map(|index| format!("transaction-{index}"))
++            .collect::<Vec<_>>()
++    );
++    assert_eq!(payloads, original_payloads);
++    assert_eq!(
++        list_anchors::<AnchorRow>(&pool, 100, None)
++            .await?
++            .pagination
++            .total,
++        ROWS + 2
++    );
++    assert_eq!(
++        list_ledger_transactions(&pool, 100, None)
++            .await?
++            .pagination
++            .total,
++        ROWS + 2
++    );
++
++    assert!(matches!(
++        list_anchors::<AnchorRow>(&pool, LIMIT, Some(&transaction_cursor)).await,
++        Err(PaginationError::InvalidCursor(_))
++    ));
++    assert!(matches!(
++        list_ledger_transactions(&pool, LIMIT, Some("!!!")).await,
++        Err(PaginationError::InvalidCursor(_))
++    ));
++    assert!(matches!(
++        snapshot_page::<Value>(
++            &pool,
++            "corridors:asset=XLM",
++            LIMIT,
++            Some(&snapshot_cursor),
++            None
++        )
++        .await,
++        Err(PaginationError::InvalidCursor(_))
++    ));
++    pool.close().await;
++    Ok(())
++}
