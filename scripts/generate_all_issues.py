@@ -3,8 +3,28 @@
 Generate 70 GitHub issues for Stellar Insights Mobile & Multi-Network Architecture
 """
 
+from pathlib import Path
 import subprocess
 import time
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+REQUIRED_SOURCE_ROOTS = ("backend/src", "sdk/src", "mobile/src")
+
+
+def require_source_layout():
+    """Stop before creating issues for source roots absent from this checkout."""
+    missing = [
+        path for path in REQUIRED_SOURCE_ROOTS
+        if not (PROJECT_ROOT / path).is_dir()
+    ]
+    if missing:
+        raise SystemExit(
+            "No issues created: this legacy generator requires backend, SDK, "
+            "and mobile source roots in the same checkout. Missing: "
+            + ", ".join(missing)
+            + ". Route these tasks to their actual source repositories first."
+        )
+
 
 def create_issue(title, body, index, total):
     """Create a single GitHub issue"""
@@ -12,7 +32,7 @@ def create_issue(title, body, index, total):
         print(f"[{index}/{total}] Creating: {title}")
         
         cmd = ["gh", "issue", "create", "--title", title, "--body", body]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        result = subprocess.run(cmd, cwd=PROJECT_ROOT, capture_output=True, text=True, timeout=30)
         
         if result.returncode == 0:
             print(f"✓ Created issue {index}\n")
@@ -137,6 +157,7 @@ Stellar Insights Mobile & Multi-Network Architecture
 {effort} hours"""
 
 def main():
+    require_source_layout()
     all_issues = []
     
     # Generate Phase 1 issues
