@@ -54,3 +54,7 @@ benchmarks/baseline.json
 /public/worker-*.js.map
 /public/fallback-*.js
 /public/fallback-*.js.map
+
+# Rust backend build
+backend/target/
+
