@@ -1,0 +1,12 @@
+[package]
+name = "governance-voting"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[[test]]
+name = "delegation_double_count_test"
+path = "../../tests/delegation_double_count_test.rs"
